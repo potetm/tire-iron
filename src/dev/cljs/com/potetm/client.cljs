@@ -6,9 +6,7 @@
 (enable-console-print!)
 
 (defn before []
-  (println "before")
-  (pr state))
+  (js/console.log "before"))
 
 (defn after []
-  (println "after")
-  (pr state))
+  (js/console.log "after"))

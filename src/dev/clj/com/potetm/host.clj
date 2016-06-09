@@ -31,6 +31,19 @@
                                 :before 'com.potetm.client/before
                                 :after 'com.potetm.client/after})))
 
+(defn repl-start []
+  (repl/repl (browser/repl-env :src "src/dev/cljs"
+                               :serve-static true
+                               :static-dir "target/public")
+             :watch "src/dev/cljs"
+             :analyze-path "src/dev/cljs"
+             :output-dir "target/public/js"
+             :special-fns (ti/special-fns
+                            {:source-dirs ["src/dev/cljs"]
+                             :state 'com.potetm.client/state
+                             :before 'com.potetm.client/before
+                             :after 'com.potetm.client/after})))
+
 (defn copy-index-to-target []
   (let [target-dir (io/file "target/public")]
     (.mkdirs target-dir)

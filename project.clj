@@ -7,8 +7,9 @@
                  [org.clojure/tools.namespace "0.3.0-alpha3"]]
   :source-paths ["src/prod/clj"]
   :resource-paths ["resources/prod"]
-  :profiles {:cljs-repl {:dependencies [[com.cemerick/piggieback "0.2.1"]]
-                         :repl-options {:nrepl-middleware [cemerick.piggieback/wrap-cljs-repl]}
-                         :source-paths ["src/dev/clj"
+  :profiles {:cljs-repl {:source-paths ["src/dev/clj"
                                         "src/dev/cljs"]
-                         :resource-paths ["resources/dev"]}})
+                         :resource-paths ["resources/dev"]}
+             :cljs-nrepl [:cljs-repl
+                          {:dependencies [[com.cemerick/piggieback "0.2.1"]]
+                           :repl-options {:nrepl-middleware [cemerick.piggieback/wrap-cljs-repl]}}]})

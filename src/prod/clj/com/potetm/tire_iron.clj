@@ -11,9 +11,8 @@
 
 (defn print-and-return [tracker]
   (if-let [e (::error tracker)]
-    (do (when (thread-bound? #'*e)
-          (set! *e e))
-        (prn :error-while-loading (::error-ns tracker))
+    (do (repl/err-out (prn :error-while-loading
+                           (::error-ns tracker)))
         e)
     :ok))
 
@@ -50,10 +49,25 @@
        "})();"))
 
 (defn remove-lib [repl-env ns]
-  (repl/-evaluate repl-env
-                  "<cljs repl>"
-                  1
-                  (compile-unload-ns ns)))
+  (let [{:keys [status value] :as ret}
+        (repl/-evaluate repl-env
+                        "<cljs repl>"
+                        1
+                        (compile-unload-ns ns))]
+    (case status
+      :error (let [e (ex-info "Error removing lib."
+                              {:type :js-eval-error
+                               :namespace ns
+                               :error ret})]
+               (repl/err-out (pr e))
+               (throw e))
+      :exception (let [e (ex-info "Error removing lib."
+                                  {:type :js-eval-exception
+                                   :namespace ns
+                                   :error ret})]
+                   (repl/err-out (pr e))
+                   (throw e))
+      :success value)))
 
 (defn require-lib [repl-env analyze-env repl-opts target-ns]
   (let [is-self-require? (= target-ns ana/*cljs-ns*)
@@ -104,12 +118,12 @@
         (recur (track-reload-one repl-env analyze-env opts tracker))
         tracker))))
 
-(defn refresh [{:keys [repl-env
-                       analyzer-env
-                       repl-opts
-                       before
-                       after
-                       state]}]
+(defn refresh* [{:keys [repl-env
+                        analyzer-env
+                        repl-opts
+                        before
+                        after
+                        state]}]
   (let [eval-form* (partial eval-form
                             repl-env
                             analyzer-env
@@ -119,9 +133,15 @@
       (assert (namespace s)
               "value must be a namespace-qualified symbol"))
     (when before
-      (eval-form* `(~before)))
+      (eval-form* `(if ~before
+                     (~before)
+                     (throw (js/Error.
+                              (str "Cannot resolve :before symbol " ~before))))))
     (when state
-      (eval-form* `(set! (.-concepti_state_ js/goog) ~state)))
+      (eval-form* `(if ~state
+                     (set! (.-tire_iron_state_ js/goog) ~state)
+                     (throw (js/Error.
+                              (str "Cannot resolve :state symbol " ~state))))))
     (alter-var-root #'refresh-tracker dir/scan-dirs refresh-dirs {:platform find/cljs})
     (prn ::reloading (::track/load refresh-tracker))
     (alter-var-root #'refresh-tracker (partial track-reload repl-env analyzer-env repl-opts))
@@ -129,24 +149,48 @@
       (if (= :ok result)
         (do
           (when state
-            (eval-form* `(set! ~state (.-concepti_state_ js/goog))))
-          (if after
-            (eval-form* `(~after))
-            result))))))
+            (eval-form* `(set! ~state (.-tire_iron_state_ js/goog))))
+          (when after
+            (eval-form* `(if ~after
+                           (~after)
+                           (throw (js/Error.
+                                    (str "Cannot resolve :after symbol " ~after))))))
+          ;; print the result because cljs-repl forces a nil return value
+          (println result))
+        (throw result)))))
 
-(defn wrap-repl [{:keys [before after state] :as closed-settings}]
+(defn refresh [{:keys [before after state] :as closed-settings}]
+  (fn [repl-env analyzer-env [_ & opts] repl-opts]
+    (let [{:keys [before after state] :as passed-settings} (apply hash-map opts)]
+      (refresh* (merge closed-settings
+                       passed-settings
+                       {:repl-env repl-env
+                        :analyzer-env analyzer-env
+                        :repl-opts repl-opts})))))
+
+(defn recover-state [closed-state]
+  (fn [repl-env analyzer-env [_ passed-state] repl-opts]
+    (let [state (or passed-state closed-state)]
+      (eval-form repl-env
+                 analyzer-env
+                 repl-opts
+                 `(set! ~state (.-tire_iron_state_ js/goog))))))
+
+(defn print-state [repl-env analyzer-env _ repl-opts]
+  (println
+    (eval-form repl-env
+               analyzer-env
+               repl-opts
+               `(.-tire_iron_state_ js/goog))))
+
+(defn wrap [f]
   (fn g
     ([repl-env analyzer-env form]
      (g repl-env analyzer-env form nil))
-    ([repl-env analyzer-env [_ & opts] repl-opts]
-     (let [backup-comp @env/*compiler*
-           {:keys [before after state] :as passed-settings} (apply hash-map opts)]
+    ([repl-env analyzer-env form repl-opts]
+     (let [backup-comp @env/*compiler*]
        (try
-         (refresh (merge closed-settings
-                         passed-settings
-                         {:repl-env repl-env
-                          :analyzer-env analyzer-env
-                          :repl-opts repl-opts}))
+         (apply f [repl-env analyzer-env form repl-opts])
          (catch Exception e ;;Exception
            (reset! env/*compiler* backup-comp)
            (throw e)))))))
@@ -159,6 +203,8 @@
                            after
                            state]}]
   (set-refresh-dirs source-dirs)
-  {'refresh (wrap-repl {:before before
-                        :after after
-                        :state state})})
+  {'refresh (wrap (refresh {:before before
+                            :after after
+                            :state state}))
+   'print-state (wrap print-state)
+   'recover-state (wrap (recover-state state))})
