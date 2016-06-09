@@ -3,10 +3,8 @@
 
 (defonce state {:repl-conn (repl/connect "http://localhost:9000/repl")})
 
-(enable-console-print!)
-
 (defn before []
-  (js/console.log "before"))
+  (println "before"))
 
 (defn after []
-  (js/console.log "after"))
+  (println "after"))

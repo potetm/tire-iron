@@ -2,6 +2,8 @@
   (:require [cemerick.piggieback :as pb]
             [cljs.build.api :as build]
             [cljs.repl.browser :as browser]
+            [cljs.repl.rhino :as rhino]
+            [cljs.repl.node :as node]
             [cljs.repl :as repl]
             [clojure.java.io :as io]
             [com.potetm.tire-iron :as ti]))
@@ -30,6 +32,34 @@
                                 :state 'com.potetm.client/state
                                 :before 'com.potetm.client/before
                                 :after 'com.potetm.client/after})))
+
+(comment
+  ;; These two seem to start up, but I can't even get namespaces
+  ;; working properly, so, there's a lot of work to do if I'm ever
+  ;; going to support them.
+  ;;
+  ;; TODO: Try with weasel
+  (defn node-start []
+    (pb/cljs-repl (node/repl-env)
+                  :watch "src/dev/cljs"
+                  :analyze-path "src/dev/cljs"
+                  :output-dir "target/public/js"
+                  :special-fns (ti/special-fns
+                                 {:source-dirs ["src/dev/cljs"]
+                                  :state 'com.potetm.client/state
+                                  :before 'com.potetm.client/before
+                                  :after 'com.potetm.client/after})))
+
+  (defn rhino-start []
+    (pb/cljs-repl (rhino/repl-env)
+                  :watch "src/dev/cljs"
+                  :analyze-path "src/dev/cljs"
+                  :output-dir "target/public/js"
+                  :special-fns (ti/special-fns
+                                 {:source-dirs ["src/dev/cljs"]
+                                  :state 'com.potetm.client/state
+                                  :before 'com.potetm.client/before
+                                  :after 'com.potetm.client/after}))))
 
 (defn repl-start []
   (repl/repl (browser/repl-env :src "src/dev/cljs"
