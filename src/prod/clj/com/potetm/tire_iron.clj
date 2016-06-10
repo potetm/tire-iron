@@ -2,9 +2,10 @@
   (:require [clojure.tools.namespace.dir :as dir]
             [clojure.tools.namespace.find :as find]
             [clojure.tools.namespace.track :as track]
+            [cljs.analyzer :as ana]
+            [cljs.compiler :as comp]
             [cljs.env :as env]
-            [cljs.repl :as repl]
-            [cljs.analyzer :as ana]))
+            [cljs.repl :as repl]))
 
 (defonce refresh-tracker (track/tracker))
 (defonce refresh-dirs [])
@@ -28,25 +29,26 @@
                       repl-opts))
 
 (defn compile-unload-ns [ns]
-  (str "(function(){\n"
-       "var ns = " ns ";\n"
-       "var ns_string = \"" ns "\";\n"
-       "var path = goog.dependencies_.nameToPath[ns_string];\n"
-       "goog.object.remove(goog.dependencies_.visited, path);\n"
-       "goog.object.remove(goog.dependencies_.written, path);\n"
-       "goog.object.remove(goog.dependencies_.written, goog.basePath + path);\n"
-       "for (var key in ns) {\n"
-       "  if (!ns.hasOwnProperty(key)) { continue; }\n"
-       ;; setting to null is critical to allow defonce to work as expected.
-       ;; defonce checks typeof var == "undefined"
-       ;; we need to allow certain vars to _not_ be redefined in order to
-       ;; maintain only one repl connection.
-       ;;
-       ;; I'm not certain, but it seemed like multiple connections usually
-       ;; resulted in stackoverflows in goog.require.
-       "  ns[key] = null;\n"
-       "}\n"
-       "})();"))
+  (let [ns (comp/munge ns)]
+    (str "(function(){\n"
+         "var ns = " ns ";\n"
+         "var ns_string = \"" ns "\";\n"
+         "var path = goog.dependencies_.nameToPath[ns_string];\n"
+         "goog.object.remove(goog.dependencies_.visited, path);\n"
+         "goog.object.remove(goog.dependencies_.written, path);\n"
+         "goog.object.remove(goog.dependencies_.written, goog.basePath + path);\n"
+         "for (var key in ns) {\n"
+         "  if (!ns.hasOwnProperty(key)) { continue; }\n"
+         ;; setting to null is critical to allow defonce to work as expected.
+         ;; defonce checks typeof var == "undefined"
+         ;; we need to allow certain vars to _not_ be redefined in order to
+         ;; maintain only one repl connection.
+         ;;
+         ;; I'm not certain, but it seemed like multiple connections usually
+         ;; resulted in stackoverflows in goog.require.
+         "  ns[key] = null;\n"
+         "}\n"
+         "})();")))
 
 (defn remove-lib [repl-env ns]
   (let [{:keys [status value] :as ret}
