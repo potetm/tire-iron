@@ -29,7 +29,8 @@
                       repl-opts))
 
 (defn compile-unload-ns [ns]
-  (let [ns (comp/munge ns)]
+  (let [ns (comp/munge ns)
+        loaded-libs (comp/munge 'cljs.core/*loaded-libs*)]
     (str "(function(){\n"
          "var ns = " ns ";\n"
          "var ns_string = \"" ns "\";\n"
@@ -48,6 +49,7 @@
          ;; resulted in stackoverflows in goog.require.
          "  ns[key] = null;\n"
          "}\n"
+         loaded-libs " = cljs.core.disj.call(null, " loaded-libs ", ns_string);\n"
          "})();")))
 
 (defn remove-lib [repl-env ns]
@@ -125,7 +127,8 @@
                         repl-opts
                         before
                         after
-                        state]}]
+                        state
+                        add-all?]}]
   (let [eval-form* (partial eval-form
                             repl-env
                             analyzer-env
@@ -144,7 +147,8 @@
                      (set! (.-tire_iron_state_ js/goog) ~state)
                      (throw (js/Error.
                               (str "Cannot resolve :state symbol " ~state))))))
-    (alter-var-root #'refresh-tracker dir/scan-dirs refresh-dirs {:platform find/cljs})
+    (alter-var-root #'refresh-tracker dir/scan-dirs refresh-dirs {:platform find/cljs
+                                                                  :add-all? add-all?})
     (prn ::reloading (::track/load refresh-tracker))
     (alter-var-root #'refresh-tracker (partial track-reload repl-env analyzer-env repl-opts))
     (let [result (print-and-return refresh-tracker)]
@@ -208,5 +212,10 @@
   {'refresh (wrap (refresh {:before before
                             :after after
                             :state state}))
-   'print-state (wrap print-state)
-   'recover-state (wrap (recover-state state))})
+   'refresh-all (wrap (refresh {:before before
+                                :after after
+                                :state state
+                                :add-all? true}))
+   'blow-it-away (wrap (refresh {:add-all? true}))
+   'print-tire-iron-state (wrap print-state)
+   'recover-tire-iron-state (wrap (recover-state state))})
