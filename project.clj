@@ -12,8 +12,10 @@
   :profiles {:dev {:source-paths ["src/dev/clj"]
                    :resource-paths ["resources/dev"]}
              :cljs-repl [:dev
-                         {:source-paths ["src/dev/cljs-browser"
-                                         "src/dev/cljs-nashorn"]}]
+                         {:source-paths ["src/dev/browser"
+                                         "src/dev/nashorn"
+                                         "src/dev/node"
+                                         "src/dev/rhino"]}]
              :cljs-nrepl [:cljs-repl
                           {:dependencies [[com.cemerick/piggieback "0.2.1"]]
                            :repl-options {:nrepl-middleware [cemerick.piggieback/wrap-cljs-repl]}}]})

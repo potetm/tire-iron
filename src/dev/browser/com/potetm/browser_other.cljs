@@ -1,4 +1,4 @@
-(ns com.potetm.other-ns)
+(ns com.potetm.browser-other)
 
 (defn my-fun []
   (println "FUN"))

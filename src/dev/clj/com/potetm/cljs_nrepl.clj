@@ -1,16 +1,16 @@
-(ns com.potetm.host
+(ns com.potetm.cljs-nrepl
   (:require [cemerick.piggieback :as pb]
             [cljs.build.api :as build]
+            [cljs.repl :as repl]
             [cljs.repl.browser :as browser]
             [cljs.repl.nashorn :as nashorn]
             [cljs.repl.node :as node]
             [cljs.repl.rhino :as rhino]
-            [cljs.repl :as repl]
             [clojure.java.io :as io]
             [com.potetm.tire-iron :as ti]))
 
 (defn browser-build []
-  (build/build "src/dev/cljs-browser"
+  (build/build "src/dev/browser"
                {:main 'com.potetm.browser-client
                 :output-to "target/public/js/client.js"
                 :output-dir "target/public/js"
@@ -21,16 +21,16 @@
                 :verbose false
                 :parallel-build true}))
 
-(defn- browser-repl-info []
-  {:env (browser/repl-env :src "src/dev/cljs-browser"
+(defn browser-repl-info []
+  {:env (browser/repl-env :src "src/dev/browser"
                           :working-dir "target/cljs-repl"
                           :serve-static true
                           :static-dir "target/public")
-   :repl-args {:watch "src/dev/cljs-browser"
-               :analyze-path "src/dev/cljs-browser"
+   :repl-args {:watch "src/dev/browser"
+               :analyze-path "src/dev/browser"
                :output-dir "target/public/js"
                :special-fns (ti/special-fns
-                              {:source-dirs ["src/dev/cljs-browser"]
+                              {:source-dirs ["src/dev/browser"]
                                :state 'com.potetm.browser-client/state
                                :before 'com.potetm.browser-client/before
                                :after 'com.potetm.browser-client/after})}})
@@ -43,50 +43,39 @@
   (let [{:keys [env repl-args]} (browser-repl-info)]
     (apply pb/cljs-repl env (apply concat repl-args))))
 
-(defn nashorn-start []
+(defn nashorn-nrepl []
   (pb/cljs-repl (nashorn/repl-env)
-                :watch "src/dev/cljs-nashorn"
-                :analyze-path "src/dev/cljs-nashorn"
+                :watch "src/dev/nashorn"
+                :analyze-path "src/dev/nashorn"
                 :output-dir "target/public/js"
                 :special-fns (ti/special-fns
-                               ;; not as important since we don't have to maintain connection
-                               ;; in nashorn, but still useful if you want to hold on to some
-                               ;; state
-                               {:source-dirs ["src/dev/cljs-nashorn"]
+                               {:source-dirs ["src/dev/nashorn"]
                                 :state 'com.potetm.nashorn-client/state
                                 :before 'com.potetm.nashorn-client/before
                                 :after 'com.potetm.nashorn-client/after})))
-(defn node-start []
+(defn node-nrepl []
   (pb/cljs-repl (node/repl-env)
-                :watch "src/dev/cljs-nashorn"
-                :analyze-path "src/dev/cljs-nashorn"
+                :watch "src/dev/node"
+                :analyze-path "src/dev/node"
                 :output-dir "target/public/js"
                 :special-fns (ti/special-fns
-                               ;; not as important since we don't have to maintain connection
-                               ;; in nashorn, but still useful if you want to hold on to some
-                               ;; state
-                               {:source-dirs ["src/dev/cljs-nashorn"]
-                                :state 'com.potetm.nashorn-client/state
-                                :before 'com.potetm.nashorn-client/before
-                                :after 'com.potetm.nashorn-client/after})))
+                               {:source-dirs ["src/dev/node"]
+                                :state 'com.potetm.node-client/state
+                                :before 'com.potetm.node-client/before
+                                :after 'com.potetm.node-client/after})))
 
-(comment
-  ;; TODO: Try with weasel
-  ;; Rhino seem to start up, but I can't even get namespaces
-  ;; working properly, so, there's a lot of work to do if I'm ever
-  ;; going to support it.
-  ;;
-  (defn rhino-start []
-    (pb/cljs-repl (rhino/repl-env)
-                  :watch "src/dev/cljs"
-                  :analyze-path "src/dev/cljs"
-                  :output-dir "target/public/js"
-                  :special-fns (ti/special-fns
-                                 {:source-dirs ["src/dev/cljs"]
-                                  :state 'com.potetm.client/state
-                                  :before 'com.potetm.client/before
-                                  :after 'com.potetm.client/after}))))
+(defn rhino-nrepl []
+  (pb/cljs-repl (rhino/repl-env)
+                :watch "src/dev/rhino"
+                :analyze-path "src/dev/rhino"
+                :output-dir "target/public/js"
+                :special-fns (ti/special-fns
+                               {:source-dirs ["src/dev/rhino"]
+                                :state 'my-ns.rhino-client/state
+                                :before 'my-ns.rhino-client/before
+                                :after 'my-ns.rhino-client/after})))
 
+;; TODO: Try with weasel & austin
 
 (defn copy-index-to-target []
   (let [target-dir (io/file "target/public")]

@@ -1,5 +1,5 @@
 (ns com.potetm.nashorn-client
-  (:require [com.potetm.other-ns :as other-ns]))
+  (:require [com.potetm.nashorn-other :as other-ns]))
 
 (def state {:app-state (atom "maih state")})
 
@@ -9,5 +9,5 @@
 (defn after []
   (println "after"))
 
-(defn dependant-fn []
+(defn dependent-fn []
   (other-ns/my-fun))
