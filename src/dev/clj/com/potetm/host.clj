@@ -56,23 +56,26 @@
                                 :state 'com.potetm.nashorn-client/state
                                 :before 'com.potetm.nashorn-client/before
                                 :after 'com.potetm.nashorn-client/after})))
-(comment
-  ;; These two seem to start up, but I can't even get namespaces
-  ;; working properly, so, there's a lot of work to do if I'm ever
-  ;; going to support them.
-  ;;
-  ;; TODO: Try with weasel
-  (defn node-start []
-    (pb/cljs-repl (node/repl-env)
-                  :watch "src/dev/cljs"
-                  :analyze-path "src/dev/cljs"
-                  :output-dir "target/public/js"
-                  :special-fns (ti/special-fns
-                                 {:source-dirs ["src/dev/cljs"]
-                                  :state 'com.potetm.client/state
-                                  :before 'com.potetm.client/before
-                                  :after 'com.potetm.client/after})))
+(defn node-start []
+  (pb/cljs-repl (node/repl-env)
+                :watch "src/dev/cljs-nashorn"
+                :analyze-path "src/dev/cljs-nashorn"
+                :output-dir "target/public/js"
+                :special-fns (ti/special-fns
+                               ;; not as important since we don't have to maintain connection
+                               ;; in nashorn, but still useful if you want to hold on to some
+                               ;; state
+                               {:source-dirs ["src/dev/cljs-nashorn"]
+                                :state 'com.potetm.nashorn-client/state
+                                :before 'com.potetm.nashorn-client/before
+                                :after 'com.potetm.nashorn-client/after})))
 
+(comment
+  ;; TODO: Try with weasel
+  ;; Rhino seem to start up, but I can't even get namespaces
+  ;; working properly, so, there's a lot of work to do if I'm ever
+  ;; going to support it.
+  ;;
   (defn rhino-start []
     (pb/cljs-repl (rhino/repl-env)
                   :watch "src/dev/cljs"
@@ -97,4 +100,5 @@
               (doseq [c (.listFiles f)]
                 (del c)))
             (io/delete-file f true))]
-    (del (io/file "target"))))
+    (del (io/file "target"))
+    (del (io/file "nashorn_code_cache"))))

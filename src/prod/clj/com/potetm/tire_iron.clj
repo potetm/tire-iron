@@ -5,7 +5,8 @@
             [cljs.analyzer :as ana]
             [cljs.compiler :as comp]
             [cljs.env :as env]
-            [cljs.repl :as repl]))
+            [cljs.repl :as repl]
+            [clojure.string :as str]))
 
 (defonce refresh-tracker (track/tracker))
 (defonce refresh-dirs [])
@@ -28,18 +29,37 @@
                       identity
                       repl-opts))
 
+(defn ns-parts [munged-ns]
+  (let [split (str/split (str munged-ns) #"\.")
+        part-count (count split)]
+    (loop [parts []
+           n 1]
+      (if (<= n part-count)
+        (recur (conj parts (str/join "."
+                                     (take n split)))
+               (inc n))
+        parts))))
+
+(defn compile-ns-exists-check [ns]
+  (str "typeof "
+       (str/join " !== 'undefined' && typeof "
+                 (ns-parts ns))
+       " !== 'undefined'"))
+
 (defn compile-unload-ns [ns]
   (let [ns (comp/munge ns)
         loaded-libs (comp/munge 'cljs.core/*loaded-libs*)]
     (str "(function(){\n"
-         "var ns = " ns ";\n"
-         "var ns_string = \"" ns "\";\n"
-         "var path = goog.dependencies_.nameToPath[ns_string];\n"
+         "var ns, ns_string, path, key;\n"
+         "ns_string = \"" ns "\";\n"
+         "path = goog.dependencies_.nameToPath[ns_string];\n"
          "goog.object.remove(goog.dependencies_.visited, path);\n"
          "goog.object.remove(goog.dependencies_.written, path);\n"
          "goog.object.remove(goog.dependencies_.written, goog.basePath + path);\n"
-         "for (var key in ns) {\n"
-         "  if (!ns.hasOwnProperty(key)) { continue; }\n"
+         "if (" (compile-ns-exists-check ns) ") {\n"
+         "  ns = " ns ";\n"
+         "  for (key in ns) {\n"
+         "    if (!ns.hasOwnProperty(key)) { continue; }\n"
          ;; setting to null is critical to allow defonce to work as expected.
          ;; defonce checks typeof var == "undefined"
          ;; we need to allow certain vars to _not_ be redefined in order to
@@ -47,8 +67,9 @@
          ;;
          ;; I'm not certain, but it seemed like multiple connections usually
          ;; resulted in stackoverflows in goog.require.
-         "  ns[key] = null;\n"
-         "}\n"
+         "    ns[key] = null;\n"
+         "  }\n
+         }\n"
          loaded-libs " = cljs.core.disj.call(null, " loaded-libs ", ns_string);\n"
          "})();")))
 
