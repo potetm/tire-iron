@@ -22,6 +22,11 @@
                 :parallel-build true}))
 
 (defn browser-repl-info []
+  ;; Fun note: don't use :optimizations :none for the browser repl.
+  ;; (The other repls don't even appear to support it. Probably because payload is less of a deal.)
+  ;; It assumes you'll be able to load goog.base yourself. Which you can't.
+  ;; Even if you use a :main, you're yelled at when you load the repl js.
+  ;; (I think it's because you're writing to the document in an iframe, but I'm not sure.)
   {:env (browser/repl-env :src "src/dev/browser"
                           :working-dir "target/cljs-repl"
                           :serve-static true
