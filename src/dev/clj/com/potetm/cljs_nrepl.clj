@@ -35,10 +35,10 @@
                :analyze-path "src/dev/browser"
                :output-dir "target/public/js"
                :special-fns (ti/special-fns
-                              {:source-dirs ["src/dev/browser"]
-                               :state 'com.potetm.browser-client/state
-                               :before 'com.potetm.browser-client/before
-                               :after 'com.potetm.browser-client/after})}})
+                              :source-dirs ["src/dev/browser"]
+                              :state 'com.potetm.browser-client/state
+                              :before 'com.potetm.browser-client/before
+                              :after 'com.potetm.browser-client/after)}})
 
 (defn browser-repl []
   (let [{:keys [env repl-args]} (browser-repl-info)]
@@ -54,20 +54,20 @@
                 :analyze-path "src/dev/nashorn"
                 :output-dir "target/public/js"
                 :special-fns (ti/special-fns
-                               {:source-dirs ["src/dev/nashorn"]
-                                :state 'com.potetm.nashorn-client/state
-                                :before 'com.potetm.nashorn-client/before
-                                :after 'com.potetm.nashorn-client/after})))
+                               :source-dirs ["src/dev/nashorn"]
+                               :state 'com.potetm.nashorn-client/state
+                               :before 'com.potetm.nashorn-client/before
+                               :after 'com.potetm.nashorn-client/after)))
 (defn node-nrepl []
   (pb/cljs-repl (node/repl-env)
                 :watch "src/dev/node"
                 :analyze-path "src/dev/node"
                 :output-dir "target/public/js"
                 :special-fns (ti/special-fns
-                               {:source-dirs ["src/dev/node"]
-                                :state 'com.potetm.node-client/state
-                                :before 'com.potetm.node-client/before
-                                :after 'com.potetm.node-client/after})))
+                               :source-dirs ["src/dev/node"]
+                               :state 'com.potetm.node-client/state
+                               :before 'com.potetm.node-client/before
+                               :after 'com.potetm.node-client/after)))
 
 (defn rhino-nrepl []
   (pb/cljs-repl (rhino/repl-env)
@@ -75,10 +75,10 @@
                 :analyze-path "src/dev/rhino"
                 :output-dir "target/public/js"
                 :special-fns (ti/special-fns
-                               {:source-dirs ["src/dev/rhino"]
-                                :state 'my-ns.rhino-client/state
-                                :before 'my-ns.rhino-client/before
-                                :after 'my-ns.rhino-client/after})))
+                               :source-dirs ["src/dev/rhino"]
+                               :state 'my-ns.rhino-client/state
+                               :before 'my-ns.rhino-client/before
+                               :after 'my-ns.rhino-client/after)))
 
 ;; TODO: Try with weasel & austin
 

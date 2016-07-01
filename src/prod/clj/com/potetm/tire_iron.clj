@@ -9,7 +9,6 @@
             [clojure.string :as str]))
 
 (defonce refresh-tracker (track/tracker))
-(defonce refresh-dirs [])
 
 (defn print-and-return [tracker]
   (if-let [e (::error tracker)]
@@ -146,6 +145,7 @@
 (defn refresh* [{:keys [repl-env
                         analyzer-env
                         repl-opts
+                        source-dirs
                         before
                         after
                         state
@@ -168,8 +168,8 @@
                      (set! (.-tire_iron_state_ js/goog) ~state)
                      (throw (js/Error.
                               (str "Cannot resolve :state symbol " ~state))))))
-    (alter-var-root #'refresh-tracker dir/scan-dirs refresh-dirs {:platform find/cljs
-                                                                  :add-all? add-all?})
+    (alter-var-root #'refresh-tracker dir/scan-dirs source-dirs {:platform find/cljs
+                                                                 :add-all? add-all?})
     (prn ::reloading (::track/load refresh-tracker))
     (alter-var-root #'refresh-tracker (partial track-reload repl-env analyzer-env repl-opts))
     (let [result (print-and-return refresh-tracker)]
@@ -186,9 +186,17 @@
           (println result))
         (throw result)))))
 
-(defn refresh [{:keys [before after state] :as closed-settings}]
+(defn refresh [{:keys [source-dirs
+                       before
+                       after
+                       state
+                       add-all?] :as closed-settings}]
   (fn [repl-env analyzer-env [_ & opts] repl-opts]
-    (let [{:keys [before after state] :as passed-settings} (apply hash-map opts)]
+    (let [{:keys [source-dirs
+                  before
+                  after
+                  state
+                  add-all?] :as passed-settings} (apply hash-map opts)]
       (refresh* (merge closed-settings
                        passed-settings
                        {:repl-env repl-env
@@ -222,21 +230,36 @@
            (reset! env/*compiler* backup-comp)
            (throw e)))))))
 
-(defn set-refresh-dirs [dirs]
-  (alter-var-root #'refresh-dirs (constantly dirs)))
+(defn special-fns
+  "args:
+     :source-dirs - A list of strings pointing to the source directories you would like to watch
+     :add-all? - Boolean indicating whether all namespaces should be refreshed
+     :before - A symbol corresponding to a zero-arg client-side function that will be called before refreshing
+     :after - A symbol corresponding to a zero-arg client-side function that will be called after refreshing
+     :state - A symbol corresponding to a client-side var that holds any state you would like to persisent between refreshes
 
-(defn special-fns [{:keys [source-dirs
-                           before
-                           after
-                           state]}]
-  (set-refresh-dirs source-dirs)
-  {'refresh (wrap (refresh {:before before
-                            :after after
-                            :state state}))
-   'refresh-all (wrap (refresh {:before before
-                                :after after
-                                :state state
-                                :add-all? true}))
-   'blow-it-away (wrap (refresh {:add-all? true}))
-   'print-tire-iron-state (wrap print-state)
-   'recover-tire-iron-state (wrap (recover-state state))})
+   All of these values can be overridden in the repl by supplying them to 'refresh.
+
+   Refresh happens in the following order:
+     1. :before is called
+     2. :state is stored
+     3. refresh happens
+     4. :state is replaced
+     5. :after is called
+
+   Returns a map of the following fns for use in the cljs repl.
+
+   'refresh: refreshes :source-dirs
+   'print-tis: prints the last state tire iron stored during refresh
+   'recover-tis: replaces :state var with the last state tire iron stored during refresh"
+  [& {:keys [source-dirs
+             before
+             after
+             state
+             add-all?]
+      :as args
+      :or
+      {source-dirs ["src"]}}]
+  {'refresh (wrap (refresh args))
+   'print-tis (wrap print-state)
+   'recover-tis (wrap (recover-state state))})
