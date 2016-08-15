@@ -1,5 +1,6 @@
 (ns com.potetm.tire-iron
-  (:require [clojure.tools.namespace.dir :as dir]
+  (:require [clojure.set :as set]
+            [clojure.tools.namespace.dir :as dir]
             [clojure.tools.namespace.find :as find]
             [clojure.tools.namespace.track :as track]
             [cljs.analyzer :as ana]
@@ -9,6 +10,10 @@
             [clojure.string :as str]))
 
 (defonce refresh-tracker (track/tracker))
+(defonce disabled-unload-namespaces #{})
+(defonce disabled-load-namespaces #{'cljs.core
+                                    'clojure.browser.repl
+                                    'clojure.browser.net})
 
 (defn print-and-return [tracker]
   (if-let [e (::error tracker)]
@@ -40,10 +45,11 @@
         parts))))
 
 (defn compile-ns-exists-check [ns]
-  (str "typeof "
-       (str/join " !== 'undefined' && typeof "
-                 (ns-parts ns))
-       " !== 'undefined'"))
+  (str/join " && "
+            (map (fn [ns-part]
+                   (str "typeof " ns-part " !== 'undefined' "
+                        "&& " ns-part " !== null "))
+                 (ns-parts ns))))
 
 (defn compile-unload-ns [ns]
   (let [ns (comp/munge ns)
@@ -142,6 +148,12 @@
         (recur (track-reload-one repl-env analyze-env opts tracker))
         tracker))))
 
+(defn remove-disabled [tracker]
+  (-> tracker
+      (update-in [::track/unload] (partial remove (set/union disabled-unload-namespaces
+                                                             disabled-load-namespaces)))
+      (update-in [::track/load] (partial remove disabled-load-namespaces))))
+
 (defn refresh* [{:keys [repl-env
                         analyzer-env
                         repl-opts
@@ -170,6 +182,7 @@
                               (str "Cannot resolve :state symbol " ~state))))))
     (alter-var-root #'refresh-tracker dir/scan-dirs source-dirs {:platform find/cljs
                                                                  :add-all? add-all?})
+    (alter-var-root #'refresh-tracker remove-disabled)
     (prn ::reloading (::track/load refresh-tracker))
     (alter-var-root #'refresh-tracker (partial track-reload repl-env analyzer-env repl-opts))
     (let [result (print-and-return refresh-tracker)]
@@ -218,6 +231,27 @@
                repl-opts
                `(.-tire_iron_state_ js/goog))))
 
+(defn maybe-quoted->symbol [symbol-or-list]
+  (if (list? symbol-or-list)
+    (second symbol-or-list)
+    symbol-or-list))
+
+(defn disable-unload!
+  ([ns]
+   (alter-var-root #'disabled-unload-namespaces conj (maybe-quoted->symbol ns)))
+  ([repl-env analyzer-env [_ ns] repl-opts]
+   (disable-unload! ns)))
+
+(defn disable-reload!
+  ([ns]
+   (alter-var-root #'disabled-load-namespaces conj (maybe-quoted->symbol ns)))
+  ([repl-env analyzer-env [_ ns] repl-opts]
+   (disable-reload! ns)))
+
+(defn print-disabled [repl-env analyzer-env _ repl-opts]
+  (prn "disabled unload" disabled-unload-namespaces)
+  (prn "disabled reload" disabled-load-namespaces))
+
 (defn wrap [f]
   (fn g
     ([repl-env analyzer-env form]
@@ -242,16 +276,18 @@
 
    Refresh happens in the following order:
      1. :before is called
-     2. :state is stored
+     2. :state is copied to a private location on the client
      3. refresh happens
-     4. :state is replaced
+     4. :state is copied back to the original location
      5. :after is called
 
    Returns a map of the following fns for use in the cljs repl.
 
-   'refresh: refreshes :source-dirs
+   'refresh: refreshes :source-dirs. Accepts the same args as `special-fns`.
+             Any passed args will override the values passed to `special-fns`.
    'print-tis: prints the last state tire iron stored during refresh
-   'recover-tis: replaces :state var with the last state tire iron stored during refresh"
+   'recover-tis: replaces :state var with the last state tire iron stored during refresh.
+                 Accepts an optional symbol pointing to an arbitrary target var."
   [& {:keys [source-dirs
              before
              after
@@ -262,4 +298,7 @@
       {source-dirs ["src"]}}]
   {'refresh (wrap (refresh args))
    'print-tis (wrap print-state)
-   'recover-tis (wrap (recover-state state))})
+   'recover-tis (wrap (recover-state state))
+   'print-disabled (wrap print-disabled)
+   'disable-unload! (wrap disable-unload!)
+   'disable-reload! (wrap disable-reload!)})
