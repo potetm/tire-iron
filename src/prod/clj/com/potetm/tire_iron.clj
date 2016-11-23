@@ -15,13 +15,6 @@
                                     'clojure.browser.repl
                                     'clojure.browser.net})
 
-(defn print-and-return [tracker]
-  (if-let [e (::error tracker)]
-    (do (repl/err-out (prn :error-while-loading
-                           (::error-ns tracker)))
-        e)
-    :ok))
-
 (defn eval-form [repl-env analyze-env repl-opts form]
   (repl/evaluate-form repl-env
                       analyze-env
@@ -77,6 +70,14 @@
          }\n"
          loaded-libs " = cljs.core.disj.call(null, " loaded-libs ", ns_string);\n"
          "})();")))
+
+(defn compile-load-nss [nss]
+  (str "goog.net.jsloader.loadMany([\n"
+       (str/join ",\n"
+                 (map (comp #(str "goog.basePath + goog.dependencies_.nameToPath[\"" % "\"]")
+                            comp/munge)
+                      nss))
+       "]);\n"))
 
 (defn remove-lib [repl-env ns]
   (let [{:keys [status value] :as ret}
@@ -170,34 +171,55 @@
       (assert (symbol? s) "value must be a symbol")
       (assert (namespace s)
               "value must be a namespace-qualified symbol"))
-    (when before
-      (eval-form* `(if ~before
-                     (~before)
-                     (throw (js/Error.
-                              (str "Cannot resolve :before symbol " ~before))))))
-    (when state
-      (eval-form* `(if ~state
-                     (set! (.-tire_iron_state_ js/goog) ~state)
-                     (throw (js/Error.
-                              (str "Cannot resolve :state symbol " ~state))))))
     (alter-var-root #'refresh-tracker dir/scan-dirs source-dirs {:platform find/cljs
                                                                  :add-all? add-all?})
     (alter-var-root #'refresh-tracker remove-disabled)
-    (prn ::reloading (::track/load refresh-tracker))
-    (alter-var-root #'refresh-tracker (partial track-reload repl-env analyzer-env repl-opts))
-    (let [result (print-and-return refresh-tracker)]
-      (if (= :ok result)
-        (do
-          (when state
-            (eval-form* `(set! ~state (.-tire_iron_state_ js/goog))))
-          (when after
-            (eval-form* `(if ~after
-                           (~after)
-                           (throw (js/Error.
-                                    (str "Cannot resolve :after symbol " ~after))))))
-          ;; print the result because cljs-repl forces a nil return value
-          (println result))
-        (throw result)))))
+    (prn :requesting-reload (::track/load refresh-tracker))
+    (repl/-evaluate repl-env
+                    "<cljs repl>"
+                    1
+                    (str "(function() {\n"
+                         (when before
+                           (let [b (comp/munge before)]
+                             (str "if (typeof " b " !== 'undefined') {\n"
+                                  "  " b ".call(null);\n"
+                                  "} else {\n"
+                                  "  throw new Error(\"Cannot resolve :before symbol: " b "\");\n"
+                                  "}\n")))
+                         (when state
+                           (let [s (comp/munge state)]
+                             (str "if (typeof " s " !== 'undefined') {\n"
+                                  "  goog.tire_iron_state__ = " s ";\n"
+                                  "} else {\n"
+                                  "  throw new Error(\"Cannot resolve :state symbol: " s "\");\n"
+                                  "}\n")))
+                         (str/join "\n"
+                                   (map compile-unload-ns
+                                        (::track/unload refresh-tracker)))
+                         "\n"
+                         "var d = " (compile-load-nss (::track/load refresh-tracker)) ";\n"
+                         (str "d.addCallback(function(res) {\n"
+                              (when state
+                                (let [s (comp/munge state)]
+                                  (str "if (typeof " s " !== 'undefined') {\n"
+                                       "  " s " = goog.tire_iron_state__;\n"
+                                       "} else {\n"
+                                       "  throw new Error(\"Cannot resolve :state symbol: " s "\");\n"
+                                       "}\n")))
+                              (when after
+                                (let [a (comp/munge after)]
+                                  (str "if (typeof " a " !== 'undefined') {\n"
+                                       "  " a ".call(null);\n"
+                                       "} else {\n"
+                                       "  throw new Error(\"Cannot resolve :before symbol: " a "\");\n"
+                                       "}\n")))
+                              "})\n")
+                         "})();"))
+    (alter-var-root #'refresh-tracker (fn [tracker]
+                                        (assoc tracker
+                                          ::track/load nil
+                                          ::track/unload nil)))
+    (println :reload-requested)))
 
 (defn refresh [{:keys [source-dirs
                        before
@@ -301,4 +323,9 @@
    'recover-tis (wrap (recover-state state))
    'print-disabled (wrap print-disabled)
    'disable-unload! (wrap disable-unload!)
-   'disable-reload! (wrap disable-reload!)})
+   'disable-reload! (wrap disable-reload!)
+   'init (wrap (fn [repl-env analyzer-env form repl-opts & _]
+                 (require-lib repl-env
+                              analyzer-env
+                              repl-opts
+                              'goog.net.jsloader)))})

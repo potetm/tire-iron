@@ -7,7 +7,9 @@
             [cljs.repl.node :as node]
             [cljs.repl.rhino :as rhino]
             [clojure.java.io :as io]
-            [com.potetm.tire-iron :as ti]))
+            [clojure.tools.namespace.repl :as r]
+            [com.potetm.tire-iron :as ti])
+  (:import (java.io File)))
 
 (defn browser-build []
   (build/build "src/dev/browser"
@@ -89,10 +91,16 @@
              (io/file target-dir "index.html"))))
 
 (defn clean []
-  (letfn [(del [f]
+  (letfn [(del [^File f]
             (when (.isDirectory f)
               (doseq [c (.listFiles f)]
                 (del c)))
             (io/delete-file f true))]
     (del (io/file "target"))
     (del (io/file "nashorn_code_cache"))))
+
+(defn fresh-browser-repl []
+  (clean)
+  (copy-index-to-target)
+  (browser-build)
+  (browser-nrepl))
