@@ -12,3 +12,8 @@
 
 (defn dependent-fn []
   (other-ns/my-fun))
+
+(defmulti test-multi :type)
+
+(defmethod test-multi :foo [_]
+  "MULTI!")

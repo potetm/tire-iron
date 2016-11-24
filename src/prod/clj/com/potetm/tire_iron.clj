@@ -48,7 +48,7 @@
   (let [ns (comp/munge ns)
         loaded-libs (comp/munge 'cljs.core/*loaded-libs*)]
     (str "(function(){\n"
-         "var ns, ns_string, path, key;\n"
+         "var ns, ns_string, path, key, value;\n"
          "ns_string = \"" ns "\";\n"
          "path = goog.dependencies_.nameToPath[ns_string];\n"
          "goog.object.remove(goog.dependencies_.visited, path);\n"
@@ -58,6 +58,18 @@
          "  ns = " ns ";\n"
          "  for (key in ns) {\n"
          "    if (!ns.hasOwnProperty(key)) { continue; }\n"
+         "    value = ns[key];"
+         ;; defmulti declares a defonce to hold its state. As noted below,
+         ;; we purposely set defonce'd members to null so they aren't redefined.
+         ;; Not redefining a multi causes defmethod failures on reload.
+         ;;
+         ;; Luckily, there is a handy `cljs.core/remove-all-methods` function to clear
+         ;; a multimethod's state. The trick then is to figure out which members
+         ;; are multimethods. The check below seems reliable.
+         "    if (typeof value.constructor !== 'undefined' && \n
+                    value.constructor.cljs$lang$ctorStr === 'cljs.core/MultiFn') {\n"
+         "      cljs.core.remove_all_methods.call(null, value);\n"
+         "    } else {\n"
          ;; setting to null is critical to allow defonce to work as expected.
          ;; defonce checks typeof var == "undefined"
          ;; we need to allow certain vars to _not_ be redefined in order to
@@ -65,11 +77,17 @@
          ;;
          ;; I'm not certain, but it seemed like multiple connections usually
          ;; resulted in stackoverflows in goog.require.
-         "    ns[key] = null;\n"
+         "      ns[key] = null;\n"
+         "    }\n"
          "  }\n
          }\n"
          loaded-libs " = cljs.core.disj.call(null, " loaded-libs ", ns_string);\n"
          "})();")))
+
+(defn compile-unload-nss [nss]
+  (str/join "\n"
+            (map compile-unload-ns
+                 nss)))
 
 (defn compile-load-nss [nss]
   (str "goog.net.jsloader.loadMany([\n"
@@ -79,22 +97,20 @@
                       nss))
        "]);\n"))
 
-(defn remove-lib [repl-env ns]
+(defn eval-script [repl-env script]
   (let [{:keys [status value] :as ret}
         (repl/-evaluate repl-env
                         "<cljs repl>"
                         1
-                        (compile-unload-ns ns))]
+                        script)]
     (case status
-      :error (let [e (ex-info "Error removing lib."
+      :error (let [e (ex-info "Error executing script"
                               {:type :js-eval-error
-                               :namespace ns
                                :error ret})]
                (repl/err-out (pr e))
                (throw e))
-      :exception (let [e (ex-info "Error removing lib."
+      :exception (let [e (ex-info "Error executing script"
                                   {:type :js-eval-exception
-                                   :namespace ns
                                    :error ret})]
                    (repl/err-out (pr e))
                    (throw e))
@@ -115,40 +131,6 @@
     (when is-self-require?
       (set! ana/*cljs-ns* restore-ns))))
 
-(defn track-reload-one
-  "Executes the next pending unload/reload operation in the dependency
-  tracker. Returns the updated dependency tracker. If reloading caused
-  an error, it is captured as ::error and the namespace which caused
-  the error is ::error-ns."
-  [repl-env analyze-env repl-opts tracker]
-  (let [{unload ::track/unload, load ::track/load} tracker]
-    (cond
-      (seq unload)
-      (let [n (first unload)]
-        (remove-lib repl-env n)
-        (update-in tracker [::track/unload] rest))
-      (seq load)
-      (let [n (first load)]
-        (try (require-lib repl-env analyze-env repl-opts n)
-             (update-in tracker [::track/load] rest)
-             (catch Throwable t
-               (assoc tracker
-                 ::error t ::error-ns n ::track/unload load))))
-      :else
-      tracker)))
-
-(defn track-reload
-  "Executes all pending unload/reload operations on dependency tracker
-  until either an error is encountered or there are no more pending
-  operations."
-  [repl-env analyze-env opts tracker]
-  (loop [tracker (dissoc tracker ::error ::error-ns)]
-    (let [{error ::error, unload ::track/unload, load ::track/load} tracker]
-      (if (and (not error)
-               (or (seq load) (seq unload)))
-        (recur (track-reload-one repl-env analyze-env opts tracker))
-        tracker))))
-
 (defn remove-disabled [tracker]
   (-> tracker
       (update-in [::track/unload] (partial remove (set/union disabled-unload-namespaces
@@ -156,97 +138,70 @@
       (update-in [::track/load] (partial remove disabled-load-namespaces))))
 
 (defn refresh* [{:keys [repl-env
-                        analyzer-env
-                        repl-opts
                         source-dirs
                         before
                         after
                         state
                         add-all?]}]
-  (let [eval-form* (partial eval-form
-                            repl-env
-                            analyzer-env
-                            repl-opts)]
-    (doseq [s (filter some? [before after state])]
-      (assert (symbol? s) "value must be a symbol")
-      (assert (namespace s)
-              "value must be a namespace-qualified symbol"))
-    (alter-var-root #'refresh-tracker dir/scan-dirs source-dirs {:platform find/cljs
-                                                                 :add-all? add-all?})
-    (alter-var-root #'refresh-tracker remove-disabled)
-    (prn :requesting-reload (::track/load refresh-tracker))
-    (repl/-evaluate repl-env
-                    "<cljs repl>"
-                    1
-                    (str "(function() {\n"
-                         (when before
-                           (let [b (comp/munge before)]
-                             (str "if (typeof " b " !== 'undefined') {\n"
-                                  "  " b ".call(null);\n"
-                                  "} else {\n"
-                                  "  throw new Error(\"Cannot resolve :before symbol: " b "\");\n"
-                                  "}\n")))
+  (doseq [s (filter some? [before after state])]
+    (assert (symbol? s) "value must be a symbol")
+    (assert (namespace s)
+            "value must be a namespace-qualified symbol"))
+  (alter-var-root #'refresh-tracker dir/scan-dirs source-dirs {:platform find/cljs
+                                                               :add-all? add-all?})
+  (alter-var-root #'refresh-tracker remove-disabled)
+  (prn :requesting-reload (::track/load refresh-tracker))
+  (eval-script repl-env
+               (str "(function() {\n"
+                    "if(typeof goog.net.jsloader == 'undefined') {\n"
+                    "  throw new Error(\"Tire iron not initialized\");"
+                    "}\n"
+                    (when before
+                      (let [b (comp/munge before)]
+                        (str "if (typeof " b " !== 'undefined') {\n"
+                             "  " b ".call(null);\n"
+                             "} else {\n"
+                             "  throw new Error(\"Cannot resolve :before symbol: " b "\");\n"
+                             "}\n")))
+                    (when state
+                      (let [s (comp/munge state)]
+                        (str "if (typeof " s " !== 'undefined') {\n"
+                             "  goog.tire_iron_state_ = " s ";\n"
+                             "} else {\n"
+                             "  throw new Error(\"Cannot resolve :state symbol: " s "\");\n"
+                             "}\n")))
+                    (compile-unload-nss (::track/unload refresh-tracker))
+                    "var d = " (compile-load-nss (::track/load refresh-tracker)) ";\n"
+                    (str "d.addCallback(function(res) {\n"
                          (when state
                            (let [s (comp/munge state)]
                              (str "if (typeof " s " !== 'undefined') {\n"
-                                  "  goog.tire_iron_state__ = " s ";\n"
+                                  "  " s " = goog.tire_iron_state_;\n"
                                   "} else {\n"
                                   "  throw new Error(\"Cannot resolve :state symbol: " s "\");\n"
                                   "}\n")))
-                         (str/join "\n"
-                                   (map compile-unload-ns
-                                        (::track/unload refresh-tracker)))
-                         "\n"
-                         "var d = " (compile-load-nss (::track/load refresh-tracker)) ";\n"
-                         (str "d.addCallback(function(res) {\n"
-                              (when state
-                                (let [s (comp/munge state)]
-                                  (str "if (typeof " s " !== 'undefined') {\n"
-                                       "  " s " = goog.tire_iron_state__;\n"
-                                       "} else {\n"
-                                       "  throw new Error(\"Cannot resolve :state symbol: " s "\");\n"
-                                       "}\n")))
-                              (when after
-                                (let [a (comp/munge after)]
-                                  (str "if (typeof " a " !== 'undefined') {\n"
-                                       "  " a ".call(null);\n"
-                                       "} else {\n"
-                                       "  throw new Error(\"Cannot resolve :before symbol: " a "\");\n"
-                                       "}\n")))
-                              "})\n")
-                         "})();"))
-    (alter-var-root #'refresh-tracker (fn [tracker]
-                                        (assoc tracker
-                                          ::track/load nil
-                                          ::track/unload nil)))
-    (println :reload-requested)))
+                         (when after
+                           (let [a (comp/munge after)]
+                             (str "if (typeof " a " !== 'undefined') {\n"
+                                  "  " a ".call(null);\n"
+                                  "} else {\n"
+                                  "  throw new Error(\"Cannot resolve :before symbol: " a "\");\n"
+                                  "}\n")))
+                         "})\n")
+                    "})();"))
+  (alter-var-root #'refresh-tracker (fn [tracker]
+                                      (assoc tracker
+                                        ::track/load nil
+                                        ::track/unload nil)))
+  (println :reload-requested))
 
-(defn refresh [{:keys [source-dirs
-                       before
-                       after
-                       state
-                       add-all?] :as closed-settings}]
-  (fn [repl-env analyzer-env [_ & opts] repl-opts]
-    (let [{:keys [source-dirs
-                  before
-                  after
-                  state
-                  add-all?] :as passed-settings} (apply hash-map opts)]
-      (refresh* (merge closed-settings
-                       passed-settings
-                       {:repl-env repl-env
-                        :analyzer-env analyzer-env
-                        :repl-opts repl-opts})))))
+(defn recover-state [repl-env analyzer-env repl-opts state]
+  (eval-form repl-env
+             analyzer-env
+             repl-opts
+             `(set! ~state (.-tire_iron_state_ js/goog))))
 
-(defn recover-state [closed-state]
-  (fn [repl-env analyzer-env [_ passed-state] repl-opts]
-    (let [state (or passed-state closed-state)]
-      (eval-form repl-env
-                 analyzer-env
-                 repl-opts
-                 `(set! ~state (.-tire_iron_state_ js/goog))))))
-
-(defn print-state [repl-env analyzer-env _ repl-opts]
+(defn print-state [repl-env analyzer-env repl-opts]
   (println
     (eval-form repl-env
                analyzer-env
@@ -260,17 +215,13 @@
 
 (defn disable-unload!
   ([ns]
-   (alter-var-root #'disabled-unload-namespaces conj (maybe-quoted->symbol ns)))
-  ([repl-env analyzer-env [_ ns] repl-opts]
-   (disable-unload! ns)))
+   (alter-var-root #'disabled-unload-namespaces conj (maybe-quoted->symbol ns))))
 
 (defn disable-reload!
   ([ns]
-   (alter-var-root #'disabled-load-namespaces conj (maybe-quoted->symbol ns)))
-  ([repl-env analyzer-env [_ ns] repl-opts]
-   (disable-reload! ns)))
+   (alter-var-root #'disabled-load-namespaces conj (maybe-quoted->symbol ns))))
 
-(defn print-disabled [repl-env analyzer-env _ repl-opts]
+(defn print-disabled []
   (prn "disabled unload" disabled-unload-namespaces)
   (prn "disabled reload" disabled-load-namespaces))
 
@@ -315,17 +266,56 @@
              after
              state
              add-all?]
-      :as args
+      :as closed-settings
       :or
       {source-dirs ["src"]}}]
-  {'refresh (wrap (refresh args))
-   'print-tis (wrap print-state)
-   'recover-tis (wrap (recover-state state))
-   'print-disabled (wrap print-disabled)
-   'disable-unload! (wrap disable-unload!)
-   'disable-reload! (wrap disable-reload!)
-   'init (wrap (fn [repl-env analyzer-env form repl-opts & _]
-                 (require-lib repl-env
-                              analyzer-env
-                              repl-opts
-                              'goog.net.jsloader)))})
+  {'refresh
+   (wrap (fn [repl-env analyzer-env [_ & opts] repl-opts]
+           (let [{:keys [source-dirs
+                         before
+                         after
+                         state
+                         add-all?] :as passed-settings} (apply hash-map opts)]
+             (refresh* (merge closed-settings
+                              passed-settings
+                              {:repl-env repl-env
+                               :analyzer-env analyzer-env
+                               :repl-opts repl-opts})))))
+
+   'print-tis
+   (wrap (fn [repl-env analyzer-env _ repl-opts]
+           (print-state repl-env
+                        analyzer-env
+                        repl-opts)))
+
+   'recover-tis
+   (wrap (fn [repl-env analyzer-env [_ state-sym] repl-opts]
+           (recover-state repl-env
+                          analyzer-env
+                          repl-opts
+                          (or state-sym
+                              state))))
+
+   'print-disabled
+   (wrap (fn [& _]
+           (print-disabled)))
+
+   'disable-unload!
+   (wrap (fn [_ _ [_ my-ns] _]
+           (disable-unload! my-ns)))
+
+   'disable-reload!
+   (wrap (fn [_ _ [_ my-ns] _]
+           (disable-reload! my-ns)))
+
+   'init
+   (wrap (fn [repl-env analyzer-env _ repl-opts]
+           (require-lib repl-env
+                        analyzer-env
+                        repl-opts
+                        'goog.net.jsloader)))
+
+   'clear
+   (wrap (fn [_ _ _ _]
+           (alter-var-root #'refresh-tracker
+                           (constantly (track/tracker)))))})
