@@ -15,6 +15,10 @@
                                     'clojure.browser.repl
                                     'clojure.browser.net})
 
+(defprotocol IRefresh
+  (-initialize [this opts])
+  (-refresh [this opts]))
+
 (defn eval-form [repl-env analyze-env repl-opts form]
   (repl/evaluate-form repl-env
                       analyze-env
@@ -82,28 +86,31 @@
   (parts-exist? (object-path-parts munged-path)))
 
 (defn call-sym-script [sym]
-  (when-not (str/blank? (str sym))
-    (str "if (" (object-path-exists? sym) ") {\n"
-         "  " sym ".call(null);\n"
-         "} else {\n"
-         "  throw new Error(\"Cannot resolve symbol: " sym "\");\n"
-         "}\n")))
+  (let [sym (comp/munge sym)]
+    (when-not (str/blank? (str sym))
+      (str "if (" (object-path-exists? sym) ") {\n"
+           "  " sym ".call(null);\n"
+           "} else {\n"
+           "  throw new Error(\"Cannot resolve symbol: " sym "\");\n"
+           "}\n"))))
 
 (defn set-ti-state-from-sym-script [state-sym]
-  (when-not (str/blank? (str state-sym))
-    (str "if (" (object-path-exists? state-sym) ") {\n"
-         "  goog.tire_iron_state_ = " state-sym ";\n"
-         "} else {\n"
-         "  throw new Error(\"Cannot resolve :state symbol: " state-sym "\");\n"
-         "}\n")))
+  (let [state-sym (comp/munge state-sym)]
+    (when-not (str/blank? (str state-sym))
+      (str "if (" (object-path-exists? state-sym) ") {\n"
+           "  goog.tire_iron_state_ = " state-sym ";\n"
+           "} else {\n"
+           "  throw new Error(\"Cannot resolve :state symbol: " state-sym "\");\n"
+           "}\n"))))
 
 (defn set-sym-from-ti-state-script [state-sym]
-  (when-not (str/blank? (str state-sym))
-    (str "if (" (parts-exist? (butlast (object-path-parts state-sym))) ") {\n"
-         "  " state-sym " = goog.tire_iron_state_;\n"
-         "} else {\n"
-         "  throw new Error(\"Cannot resolve :state symbol: " state-sym "\");\n"
-         "}\n")))
+  (let [state-sym (comp/munge state-sym)]
+    (when-not (str/blank? (str state-sym))
+      (str "if (" (parts-exist? (butlast (object-path-parts state-sym))) ") {\n"
+           "  " state-sym " = goog.tire_iron_state_;\n"
+           "} else {\n"
+           "  throw new Error(\"Cannot resolve :state symbol: " state-sym "\");\n"
+           "}\n"))))
 
 (defn compile-unload-ns [ns]
   (let [ns (comp/munge ns)
@@ -127,8 +134,11 @@
          ;; Luckily, there is a handy `cljs.core/remove-all-methods` function to clear
          ;; a multimethod's state. The trick then is to figure out which members
          ;; are multimethods. The check below seems reliable.
-         "    if (typeof value.constructor !== 'undefined' && \n
-                    value.constructor.cljs$lang$ctorStr === 'cljs.core/MultiFn') {\n"
+         "    if (typeof value !== 'undefined' && \n
+                         value !== null && \n
+                    typeof value.constructor !== 'undefined' && \n
+                           value.constructor !== null && \n
+                      value.constructor.cljs$lang$ctorStr === 'cljs.core/MultiFn') {\n"
          "      cljs.core.remove_all_methods.call(null, value);\n"
          "    } else {\n"
          ;; setting to null is critical to allow defonce to work as expected.
@@ -150,7 +160,13 @@
             (map compile-unload-ns
                  nss)))
 
-(defn load-nss-browser-async [nss]
+(defn load-nss-sync [nss]
+  (str/join "\n"
+            (map (comp #(str "goog.require('" % "');")
+                       comp/munge)
+                 nss)))
+
+(defn load-nss-html-async [nss]
   (let [loaded-libs (comp/munge 'cljs.core/*loaded-libs*)
         nss-array (str "["
                        (str/join ",\n"
@@ -171,14 +187,46 @@
                                                              disabled-load-namespaces)))
       (update-in [::track/load] (partial remove disabled-load-namespaces))))
 
-(defn refresh* [{:keys [repl-env
-                        analyzer-env
-                        repl-opts
-                        source-dirs
-                        before
-                        after
-                        state
-                        add-all?]}]
+(defrecord HtmlAsyncRefresher []
+  IRefresh
+  (-initialize [this {:keys [repl-env analyzer-env repl-opts]}]
+    (require-lib repl-env
+                 analyzer-env
+                 repl-opts
+                 'goog.net.jsloader))
+  (-refresh [this {:keys [repl-env before after state unload-nss load-nss]}]
+    (eval-script repl-env
+                 (str "(function() {\n"
+                      (call-sym-script before)
+                      (set-ti-state-from-sym-script state)
+                      (unload-nss-script unload-nss)
+                      "var d = " (load-nss-html-async load-nss) ";\n"
+                      "d.addCallback(function(ret) {\n"
+                      (set-sym-from-ti-state-script state)
+                      (call-sym-script after)
+                      "  });\n"
+                      "})();"))))
+
+(defrecord SyncRefresher []
+  IRefresh
+  (-initialize [this _opts])
+  (-refresh [this {:keys [repl-env before after state unload-nss load-nss]}]
+    (eval-script repl-env
+                 (str (call-sym-script before)
+                      (set-ti-state-from-sym-script state)
+                      (unload-nss-script unload-nss)
+                      (load-nss-sync load-nss)
+                      (set-sym-from-ti-state-script state)
+                      (call-sym-script after)))))
+
+(defn refresh* [refresher {:keys [repl-env
+                                  analyzer-env
+                                  repl-opts
+                                  source-dirs
+                                  before
+                                  after
+                                  state
+                                  add-all?]}]
   (doseq [s (filter some? [before after state])]
     (assert (symbol? s) "value must be a symbol")
     (assert (namespace s)
@@ -187,20 +235,14 @@
                                                                :add-all? add-all?})
   (alter-var-root #'refresh-tracker remove-disabled)
   (prn :requesting-reload (::track/load refresh-tracker))
-  (eval-script repl-env
-               (str "(function() {\n"
-                    (call-sym-script (comp/munge before))
-                    (set-ti-state-from-sym-script (comp/munge state))
-                    (unload-nss-script (map comp/munge
-                                            (::track/unload refresh-tracker)))
-                    "var d = " (load-nss-browser-async (map comp/munge
-                                                            (::track/load refresh-tracker)))
-                    ";\n"
-                    "d.addCallback(function(ret) {\n"
-                    (set-sym-from-ti-state-script (comp/munge state))
-                    (call-sym-script (comp/munge after))
-                    "  });\n"
-                    "})();"))
+  (-refresh refresher {:repl-env repl-env
+                       :analyzer-env analyzer-env
+                       :repl-opts repl-opts
+                       :before before
+                       :after after
+                       :state state
+                       :unload-nss (::track/unload refresh-tracker)
+                       :load-nss (::track/load refresh-tracker)})
   (alter-var-root #'refresh-tracker (fn [tracker]
                                       (assoc tracker
                                         ::track/load nil
@@ -250,6 +292,13 @@
            (reset! env/*compiler* backup-comp)
            (throw e)))))))
 
+(defn determine-refresher [repl-env]
+  (if (= "true"
+         (eval-script repl-env
+                      "!!goog.global.document"))
+    (->HtmlAsyncRefresher)
+    (->SyncRefresher)))
+
 (defn special-fns
   "args:
      :source-dirs - A list of strings pointing to the source directories you would like to watch
@@ -278,56 +327,65 @@
              before
              after
              state
-             add-all?]
+             add-all?
+             refresher]
       :as closed-settings
       :or
       {source-dirs ["src"]}}]
-  {'refresh
-   (wrap (fn [repl-env analyzer-env [_ & opts] repl-opts]
-           (let [{:keys [source-dirs
-                         before
-                         after
-                         state
-                         add-all?] :as passed-settings} (apply hash-map opts)]
-             (refresh* (merge closed-settings
-                              passed-settings
-                              {:repl-env repl-env
-                               :analyzer-env analyzer-env
-                               :repl-opts repl-opts})))))
+  (let [refresher (atom refresher)]
+    {'refresh
+     (wrap (fn [repl-env analyzer-env [_ & opts] repl-opts]
+             (let [{:keys [source-dirs
+                           before
+                           after
+                           state
+                           add-all?] :as passed-settings} (apply hash-map opts)]
+               (if-let [r @refresher]
+                 (refresh* @refresher
+                           (merge closed-settings
+                                  passed-settings
+                                  {:repl-env repl-env
+                                   :analyzer-env analyzer-env
+                                   :repl-opts repl-opts}))
+                 (throw (ex-info "tire-iron not initialized"
+                                 {}))))))
 
-   'init
-   (wrap (fn [repl-env analyzer-env _ repl-opts]
-           (require-lib repl-env
-                        analyzer-env
-                        repl-opts
-                        'goog.net.jsloader)))
+     'init
+     (wrap (fn [repl-env analyzer-env _ repl-opts]
+             (let [refresher (or @refresher
+                                 (reset! refresher
+                                         (determine-refresher repl-env)))]
+               (-initialize refresher
+                            {:repl-env repl-env
+                             :analyzer-env analyzer-env
+                             :repl-opts repl-opts}))))
 
-   'print-tis
-   (wrap (fn [repl-env analyzer-env _ repl-opts]
-           (print-state repl-env
-                        analyzer-env
-                        repl-opts)))
-
-   'recover-tis
-   (wrap (fn [repl-env analyzer-env [_ state-sym] repl-opts]
-           (recover-state repl-env
+     'print-tis
+     (wrap (fn [repl-env analyzer-env _ repl-opts]
+             (print-state repl-env
                           analyzer-env
-                          repl-opts
-                          (or state-sym
-                              state))))
+                          repl-opts)))
 
-   'print-disabled
-   (wrap (fn [& _]
-           (print-disabled)))
+     'recover-tis
+     (wrap (fn [repl-env analyzer-env [_ state-sym] repl-opts]
+             (recover-state repl-env
+                            analyzer-env
+                            repl-opts
+                            (or state-sym
+                                state))))
 
-   'disable-unload!
-   (wrap (fn [_ _ [_ my-ns] _]
-           (disable-unload! my-ns)))
+     'print-disabled
+     (wrap (fn [& _]
+             (print-disabled)))
 
-   'disable-reload!
-   (wrap (fn [_ _ [_ my-ns] _]
-           (disable-reload! my-ns)))
+     'disable-unload!
+     (wrap (fn [_ _ [_ my-ns] _]
+             (disable-unload! my-ns)))
 
-   'clear
-   (wrap (fn [_ _ _ _]
-           (clear!)))})
+     'disable-reload!
+     (wrap (fn [_ _ [_ my-ns] _]
+             (disable-reload! my-ns)))
+
+     'clear
+     (wrap (fn [_ _ _ _]
+             (clear!)))}))
