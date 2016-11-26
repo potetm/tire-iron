@@ -9,12 +9,6 @@
             [cljs.repl :as repl]
             [clojure.string :as str]))
 
-(defonce refresh-tracker (track/tracker))
-(defonce disabled-unload-namespaces #{})
-(defonce disabled-load-namespaces #{'cljs.core
-                                    'clojure.browser.repl
-                                    'clojure.browser.net})
-
 (defprotocol IRefresh
   (-initialize [this opts])
   (-refresh [this opts]))
@@ -181,11 +175,11 @@
          "  });"
          "})();")))
 
-(defn remove-disabled [tracker]
+(defn remove-disabled [tracker disable-unload disable-load]
   (-> tracker
-      (update-in [::track/unload] (partial remove (set/union disabled-unload-namespaces
-                                                             disabled-load-namespaces)))
-      (update-in [::track/load] (partial remove disabled-load-namespaces))))
+      (update-in [::track/unload] (partial remove (set/union disable-unload
+                                                             disable-load)))
+      (update-in [::track/load] (partial remove disable-load))))
 
 (defrecord HtmlAsyncRefresher []
   IRefresh
@@ -219,35 +213,38 @@
                       (set-sym-from-ti-state-script state)
                       (call-sym-script after)))))
 
-(defn refresh* [refresher {:keys [repl-env
-                                  analyzer-env
-                                  repl-opts
-                                  source-dirs
-                                  before
-                                  after
-                                  state
-                                  add-all?]}]
+(defn refresh* [{:keys [refresher
+                        tracker
+                        disable-unload
+                        disable-load
+                        repl-env
+                        analyzer-env
+                        repl-opts
+                        source-dirs
+                        before
+                        after
+                        state
+                        add-all?]}]
   (doseq [s (filter some? [before after state])]
     (assert (symbol? s) "value must be a symbol")
     (assert (namespace s)
             "value must be a namespace-qualified symbol"))
-  (alter-var-root #'refresh-tracker dir/scan-dirs source-dirs {:platform find/cljs
-                                                               :add-all? add-all?})
-  (alter-var-root #'refresh-tracker remove-disabled)
-  (prn :requesting-reload (::track/load refresh-tracker))
-  (-refresh refresher {:repl-env repl-env
-                       :analyzer-env analyzer-env
-                       :repl-opts repl-opts
-                       :before before
-                       :after after
-                       :state state
-                       :unload-nss (::track/unload refresh-tracker)
-                       :load-nss (::track/load refresh-tracker)})
-  (alter-var-root #'refresh-tracker (fn [tracker]
-                                      (assoc tracker
-                                        ::track/load nil
-                                        ::track/unload nil)))
-  (println :reload-requested))
+  (swap! tracker dir/scan-dirs source-dirs {:platform find/cljs
+                                            :add-all? add-all?})
+  (let [{:keys [::track/unload
+                ::track/load]}
+        (swap! tracker remove-disabled disable-unload disable-load)]
+    (prn :requesting-reload load)
+    (-refresh refresher {:repl-env repl-env
+                         :analyzer-env analyzer-env
+                         :repl-opts repl-opts
+                         :before before
+                         :after after
+                         :state state
+                         :unload-nss unload
+                         :load-nss load}))
+  (swap! tracker assoc ::track/load nil ::track/unload nil)
+  (println :ok))
 
 (defn recover-state [repl-env analyzer-env repl-opts state]
   (eval-form repl-env
@@ -267,19 +264,6 @@
     (second symbol-or-list)
     symbol-or-list))
 
-(defn disable-unload! [ns]
-  (alter-var-root #'disabled-unload-namespaces conj (maybe-quoted->symbol ns)))
-
-(defn disable-reload! [ns]
-  (alter-var-root #'disabled-load-namespaces conj (maybe-quoted->symbol ns)))
-
-(defn clear! []
-  (alter-var-root #'refresh-tracker (constantly (track/tracker))))
-
-(defn print-disabled []
-  (prn "disabled unload" disabled-unload-namespaces)
-  (prn "disabled reload" disabled-load-namespaces))
-
 (defn wrap [f]
   (fn g
     ([repl-env analyzer-env form]
@@ -288,7 +272,7 @@
      (let [backup-comp @env/*compiler*]
        (try
          (apply f [repl-env analyzer-env form repl-opts])
-         (catch Exception e ;;Exception
+         (catch Exception e
            (reset! env/*compiler* backup-comp)
            (throw e)))))))
 
@@ -328,11 +312,19 @@
              after
              state
              add-all?
+             disable-unload
+             disable-load
              refresher]
       :as closed-settings
       :or
       {source-dirs ["src"]}}]
-  (let [refresher (atom refresher)]
+  (let [refresher (atom refresher)
+        tracker (atom (track/tracker))
+        disable-unload (atom (into #{} disable-unload))
+        disable-load (atom (into #{'cljs.core
+                                   'clojure.browser.repl
+                                   'clojure.browser.net}
+                                 disable-load))]
     {'refresh
      (wrap (fn [repl-env analyzer-env [_ & opts] repl-opts]
              (let [{:keys [source-dirs
@@ -341,14 +333,17 @@
                            state
                            add-all?] :as passed-settings} (apply hash-map opts)]
                (if-let [r @refresher]
-                 (refresh* @refresher
-                           (merge closed-settings
-                                  passed-settings
-                                  {:repl-env repl-env
+                 (refresh* (merge {:refresher r
+                                   :tracker tracker
+                                   :disable-unload @disable-unload
+                                   :disable-load @disable-load
+                                   :repl-env repl-env
                                    :analyzer-env analyzer-env
-                                   :repl-opts repl-opts}))
-                 (throw (ex-info "tire-iron not initialized"
-                                 {}))))))
+                                   :repl-opts repl-opts}
+                                  closed-settings
+                                  passed-settings))
+                 (binding [*out* *err*]
+                   (println "tire-iron not initialized"))))))
 
      'init
      (wrap (fn [repl-env analyzer-env _ repl-opts]
@@ -376,16 +371,17 @@
 
      'print-disabled
      (wrap (fn [& _]
-             (print-disabled)))
+             (prn :disabled-unload @disable-unload)
+             (prn :disabled-reload @disable-load)))
 
      'disable-unload!
      (wrap (fn [_ _ [_ my-ns] _]
-             (disable-unload! my-ns)))
+             (swap! disable-unload conj (maybe-quoted->symbol my-ns))))
 
      'disable-reload!
      (wrap (fn [_ _ [_ my-ns] _]
-             (disable-reload! my-ns)))
+             (swap! disable-load conj (maybe-quoted->symbol my-ns))))
 
      'clear
      (wrap (fn [_ _ _ _]
-             (clear!)))}))
+             (reset! tracker (track/tracker))))}))
