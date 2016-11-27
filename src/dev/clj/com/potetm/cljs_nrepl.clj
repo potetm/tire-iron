@@ -8,7 +8,8 @@
             [cljs.repl.rhino :as rhino]
             [clojure.java.io :as io]
             [clojure.tools.namespace.repl :as r]
-            [com.potetm.tire-iron :as ti])
+            [com.potetm.tire-iron :as ti]
+            [weasel.repl.websocket :as weasel])
   (:import (java.io File)))
 
 (defn browser-build []
@@ -78,7 +79,32 @@
                                :before 'my-ns.rhino-client/before
                                :after 'my-ns.rhino-client/after)))
 
-;; TODO: Try with weasel & austin
+(defn weasel-build []
+  (build/build "src/dev/weasel"
+               {:main 'com.potetm.weasel-client
+                :output-to "target/public/js/client.js"
+                :output-dir "target/public/js"
+                :asset-path "js"
+                :source-map true
+                :optimizations :none
+                :pretty-print true
+                :verbose false
+                :parallel-build true}))
+
+(defn weasel-nrepl []
+  (pb/cljs-repl (weasel/repl-env :src "src/dev/weasel"
+                                 :working-dir "target/cljs-repl"
+                                 :serve-static true
+                                 :static-dir "target/public")
+                :analyze-path "src/dev/weasel"
+                :output-dir "target/public/js"
+                :special-fns (ti/special-fns
+                               :source-dirs ["src/dev/weasel"]
+                               :state 'com.potetm.weasel-client/state
+                               :before 'com.potetm.weasel-client/before
+                               :after 'com.potetm.weasel-client/after)))
+
+;; TODO: Try with austin
 
 (defn copy-index-to-target []
   (let [target-dir (io/file "target/public")]

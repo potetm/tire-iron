@@ -2,6 +2,8 @@
   (:require [clojure.browser.repl :as repl]
             [com.potetm.browser-other :as other-ns]))
 
+;; Still need to defonce. Even though we take care to preserve this var
+;; during unloading, you need to make sure it's not reset during ns loading.
 (defonce state {:repl-conn (repl/connect "http://localhost:9000/repl")})
 
 (defn before []

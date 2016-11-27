@@ -14,3 +14,11 @@
 
 (defn dependent-fn []
   (other-ns/my-fun))
+
+;; Multimethods don't work in nashorn because they use defonce. See above.
+;; TODO: File an issue w/ cljs to get that fixed.
+(comment
+  (defmulti test-multi :type)
+
+  (defmethod test-multi :foo [_]
+    "MULTI!"))
