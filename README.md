@@ -11,7 +11,7 @@ Bringing the Reloaded Workflow to ClojureScript
 
 ## Installation
 ```
-[com.potetm/tire-iron "0.1.0"]
+[com.potetm/tire-iron "0.1.0-SNAPSHOT"]
 ```
 
 tire-iron should not be included in your production code (e.g.
