@@ -90,30 +90,29 @@
            "  throw new Error(\"Cannot resolve symbol: " sym "\");\n"
            "}\n"))))
 
-(defn set-ti-state-from-sym-script [state-sym]
-  (let [state-sym (comp/munge state-sym)]
-    (when-not (str/blank? (str state-sym))
-      (str "if (" (object-path-exists? state-sym) ") {\n"
-           "  goog.tire_iron_state_ = " state-sym ";\n"
-           "} else {\n"
-           "  throw new Error(\"Cannot resolve :state symbol: " state-sym "\");\n"
-           "}\n"))))
-
-(defn set-sym-from-ti-state-script [state-sym]
-  (let [state-sym (comp/munge state-sym)]
-    (when-not (str/blank? (str state-sym))
-      (str "if (" (parts-exist? (butlast (object-path-parts state-sym))) ") {\n"
-           "  " state-sym " = goog.tire_iron_state_;\n"
-           "} else {\n"
-           "  throw new Error(\"Cannot resolve :state symbol: " state-sym "\");\n"
-           "}\n"))))
-
-(defn compile-unload-ns [ns]
+(defn compile-unload-ns [state-sym ns]
+  ;; We DO need to guarantee some location won't be cleared. Otherwise we might
+  ;; blow away and rebuild their REPL connection.
   (let [ns (comp/munge ns)
         loaded-libs (comp/munge 'cljs.core/*loaded-libs*)]
     (str "(function(){\n"
-         "var ns, ns_string, path, key, value;\n"
+         "var ns, ns_string, path, key, state_path_parts, on_state_path;\n"
          "ns_string = \"" ns "\";\n"
+         "state_path_parts = ["
+         (str/join ","
+                   (map #(str "\"" % "\"")
+                        (object-path-parts (comp/munge state-sym))))
+         "];\n"
+         "on_state_path = function(k) {\n"
+         "  var i, full_name;\n"
+         "  full_name = ns_string + '.' + k;\n"
+         "  for (i = 0; i < state_path_parts.length; i++) {\n"
+         "    if (state_path_parts[i] === full_name) {\n"
+         "      return true;"
+         "    }\n"
+         "  }\n"
+         "  return false;\n"
+         "}\n;"
          "path = goog.dependencies_.nameToPath[ns_string];\n"
          "goog.object.remove(goog.dependencies_.visited, path);\n"
          "goog.object.remove(goog.dependencies_.written, path);\n"
@@ -122,39 +121,17 @@
          "  ns = " ns ";\n"
          "  for (key in ns) {\n"
          "    if (!ns.hasOwnProperty(key)) { continue; }\n"
-         "    value = ns[key];"
-         ;; defmulti declares a defonce to hold its state. As noted below,
-         ;; we purposely set defonce'd members to null so they aren't redefined.
-         ;; Not redefining a multi causes defmethod failures on reload.
-         ;;
-         ;; Luckily, there is a handy `cljs.core/remove-all-methods` function to clear
-         ;; a multimethod's state. The trick then is to figure out which members
-         ;; are multimethods. The check below seems reliable.
-         "    if (typeof value !== 'undefined' && \n
-                         value !== null && \n
-                    typeof value.constructor !== 'undefined' && \n
-                           value.constructor !== null && \n
-                      value.constructor.cljs$lang$ctorStr === 'cljs.core/MultiFn') {\n"
-         "      cljs.core.remove_all_methods.call(null, value);\n"
+         "    if (!on_state_path(key)) {\n"
          "      delete ns[key];\n"
-         "    } else {\n"
-         ;; setting to null is critical to allow defonce to work as expected.
-         ;; defonce checks typeof var == "undefined"
-         ;; we need to allow certain vars to _not_ be redefined in order to
-         ;; maintain only one repl connection.
-         ;;
-         ;; I'm not certain, but it seemed like multiple connections usually
-         ;; resulted in stackoverflows in goog.require.
-         "      ns[key] = null;\n"
          "    }\n"
          "  }\n
          }\n"
          loaded-libs " = cljs.core.disj.call(null, " loaded-libs ", ns_string);\n"
          "})();")))
 
-(defn unload-nss-script [nss]
+(defn unload-nss-script [state-sym nss]
   (str/join "\n"
-            (map compile-unload-ns
+            (map (partial compile-unload-ns state-sym)
                  nss)))
 
 (defn load-nss-sync [nss]
@@ -195,11 +172,9 @@
     (eval-script repl-env
                  (str "(function() {\n"
                       (call-sym-script before)
-                      (set-ti-state-from-sym-script state)
-                      (unload-nss-script unload-nss)
+                      (unload-nss-script state unload-nss)
                       "var d = " (load-nss-html-async load-nss) ";\n"
                       "d.addCallback(function(ret) {\n"
-                      (set-sym-from-ti-state-script state)
                       (call-sym-script after)
                       "  });\n"
                       "})();"))))
@@ -210,10 +185,8 @@
   (-refresh [this {:keys [repl-env before after state unload-nss load-nss]}]
     (eval-script repl-env
                  (str (call-sym-script before)
-                      (set-ti-state-from-sym-script state)
-                      (unload-nss-script unload-nss)
+                      (unload-nss-script state unload-nss)
                       (load-nss-sync load-nss)
-                      (set-sym-from-ti-state-script state)
                       (call-sym-script after)))))
 
 (defn refresh* [{:keys [refresher
@@ -255,19 +228,6 @@
   (swap! tracker assoc ::track/load nil ::track/unload nil)
   (println :ok))
 
-(defn recover-state [repl-env analyzer-env repl-opts state]
-  (eval-form repl-env
-             analyzer-env
-             repl-opts
-             `(set! ~state (.-tire_iron_state_ js/goog))))
-
-(defn print-state [repl-env analyzer-env repl-opts]
-  (println
-    (eval-form repl-env
-               analyzer-env
-               repl-opts
-               `(.-tire_iron_state_ js/goog))))
-
 (defn maybe-quoted->symbol [symbol-or-list]
   (if (list? symbol-or-list)
     (second symbol-or-list)
@@ -304,18 +264,13 @@
 
    Refresh happens in the following order:
      1. :before is called
-     2. :state is copied to a private location on the client
-     3. refresh happens
-     4. :state is copied back to the original location
-     5. :after is called
+     2. refresh happens
+     3. :after is called
 
    Returns a map of the following fns for use in the cljs repl.
 
    'refresh: refreshes :source-dirs. Accepts the same args as `special-fns`.
-             Any passed args will override the values passed to `special-fns`.
-   'print-tis: prints the last state tire iron stored during refresh
-   'recover-tis: replaces :state var with the last state tire iron stored during refresh.
-                 Accepts an optional symbol pointing to an arbitrary target var."
+             Any passed args will override the values passed to `special-fns`."
   [& {:keys [source-dirs
              before
              after
@@ -363,20 +318,6 @@
                             {:repl-env repl-env
                              :analyzer-env analyzer-env
                              :repl-opts repl-opts}))))
-
-     'print-tis
-     (wrap (fn [repl-env analyzer-env _ repl-opts]
-             (print-state repl-env
-                          analyzer-env
-                          repl-opts)))
-
-     'recover-tis
-     (wrap (fn [repl-env analyzer-env [_ state-sym] repl-opts]
-             (recover-state repl-env
-                            analyzer-env
-                            repl-opts
-                            (or state-sym
-                                state))))
 
      'print-disabled
      (wrap (fn [& _]
