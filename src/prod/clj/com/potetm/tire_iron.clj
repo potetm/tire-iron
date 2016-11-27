@@ -210,21 +210,23 @@
   (let [{:keys [::track/unload
                 ::track/load]}
         (swap! tracker remove-disabled disable-unload disable-load)]
-    (prn :rebuilding)
-    ;; build.api does some expensive input checks
-    ;; Once we're here, no checks are needed.
-    (closure/build (apply build/inputs source-dirs)
-                   repl-opts
-                   env/*compiler*)
-    (prn :requesting-reload load)
-    (-refresh refresher {:repl-env repl-env
-                         :analyzer-env analyzer-env
-                         :repl-opts repl-opts
-                         :before before
-                         :after after
-                         :state state
-                         :unload-nss unload
-                         :load-nss load}))
+    (when (seq load)
+      (prn :rebuilding)
+      ;; build.api does some expensive input checks
+      ;; Once we're here, no checks are needed.
+      (closure/build (apply build/inputs source-dirs)
+                     repl-opts
+                     env/*compiler*))
+    (when (or (seq unload) (seq load))
+      (prn :requesting-reload load)
+      (-refresh refresher {:repl-env repl-env
+                           :analyzer-env analyzer-env
+                           :repl-opts repl-opts
+                           :before before
+                           :after after
+                           :state state
+                           :unload-nss unload
+                           :load-nss load})))
   (swap! tracker assoc ::track/load nil ::track/unload nil)
   (println :ok))
 
@@ -260,7 +262,11 @@
      :after - A symbol corresponding to a zero-arg client-side function that will be called after refreshing
      :state - A symbol corresponding to a client-side var that holds any state you would like to persisent between refreshes
 
-   All of these values can be overridden in the repl by supplying them to 'refresh.
+   Everything but :source-dirs can be overridden in the repl by supplying them to 'refresh.
+
+   The :state var will not be touched during unloading. However the namespace will
+   be reloaded, so put it in a `defonce`. You must put your repl connection in
+   the state var if you're using a browser repl!
 
    Refresh happens in the following order:
      1. :before is called
@@ -269,8 +275,13 @@
 
    Returns a map of the following fns for use in the cljs repl.
 
-   'refresh: refreshes :source-dirs. Accepts the same args as `special-fns`.
-             Any passed args will override the values passed to `special-fns`."
+   'init    - Must be called prior to refresh.
+   'refresh - refreshes :source-dirs.
+              Any passed args will override the values passed to `special-fns`.
+   'clear   - Clear the tracker state.
+   'disable-unload! - Add a namespace to the disabled unload list.
+   'disable-reload! - Add a namespace to the disabled reload list.
+   'print-disabled  - See the disabled lists."
   [& {:keys [source-dirs
              before
              after
@@ -288,17 +299,19 @@
         disable-load (atom (into #{'cljs.core
                                    'clojure.browser.repl
                                    'clojure.browser.net}
-                                 disable-load))]
+                                 disable-load))
+        closed-settings (select-keys closed-settings
+                                     [:before
+                                      :after
+                                      :state
+                                      :add-all?])]
     {'refresh
      (wrap (fn [repl-env analyzer-env [_ & opts] repl-opts]
-             (let [{:keys [source-dirs
-                           before
-                           after
-                           state
-                           add-all?] :as passed-settings} (apply hash-map opts)]
+             (let [passed-settings (apply hash-map opts)]
                (if-let [r @refresher]
                  (refresh* (merge {:refresher r
                                    :tracker tracker
+                                   :source-dirs source-dirs
                                    :disable-unload @disable-unload
                                    :disable-load @disable-load
                                    :repl-env repl-env
