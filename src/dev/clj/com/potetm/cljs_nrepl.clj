@@ -33,8 +33,7 @@
                           :working-dir "target/cljs-repl"
                           :serve-static true
                           :static-dir "target/public")
-   :repl-args {:watch "src/dev/browser"
-               :analyze-path "src/dev/browser"
+   :repl-args {:analyze-path "src/dev/browser"
                :output-dir "target/public/js"
                :special-fns (ti/special-fns
                               :source-dirs ["src/dev/browser"]
@@ -52,7 +51,6 @@
 
 (defn nashorn-nrepl []
   (pb/cljs-repl (nashorn/repl-env)
-                :watch "src/dev/nashorn"
                 :analyze-path "src/dev/nashorn"
                 :output-dir "target/public/js"
                 :special-fns (ti/special-fns
@@ -62,7 +60,6 @@
                                :after 'com.potetm.nashorn-client/after)))
 (defn node-nrepl []
   (pb/cljs-repl (node/repl-env)
-                :watch "src/dev/node"
                 :analyze-path "src/dev/node"
                 :output-dir "target/public/js"
                 :special-fns (ti/special-fns
@@ -73,7 +70,6 @@
 
 (defn rhino-nrepl []
   (pb/cljs-repl (rhino/repl-env)
-                :watch "src/dev/rhino"
                 :analyze-path "src/dev/rhino"
                 :output-dir "target/public/js"
                 :special-fns (ti/special-fns

@@ -4,6 +4,8 @@
             [clojure.tools.namespace.find :as find]
             [clojure.tools.namespace.track :as track]
             [cljs.analyzer :as ana]
+            [cljs.build.api :as build]
+            [cljs.closure :as closure]
             [cljs.compiler :as comp]
             [cljs.env :as env]
             [cljs.repl :as repl]
@@ -134,6 +136,7 @@
                            value.constructor !== null && \n
                       value.constructor.cljs$lang$ctorStr === 'cljs.core/MultiFn') {\n"
          "      cljs.core.remove_all_methods.call(null, value);\n"
+         "      delete ns[key];\n"
          "    } else {\n"
          ;; setting to null is critical to allow defonce to work as expected.
          ;; defonce checks typeof var == "undefined"
@@ -234,6 +237,12 @@
   (let [{:keys [::track/unload
                 ::track/load]}
         (swap! tracker remove-disabled disable-unload disable-load)]
+    (prn :rebuilding)
+    ;; build.api does some expensive input checks
+    ;; Once we're here, no checks are needed.
+    (closure/build (apply build/inputs source-dirs)
+                   repl-opts
+                   env/*compiler*)
     (prn :requesting-reload load)
     (-refresh refresher {:repl-env repl-env
                          :analyzer-env analyzer-env
