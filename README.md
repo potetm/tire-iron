@@ -6,7 +6,7 @@ Bringing the Reloaded Workflow to ClojureScript
 2. Facilitate sane, managed application startup (a la [Component](https://github.com/stuartsierra/component)).
 3. Provide full namespace reloading (uninstall old vars)
 4. Function out of the box in every ClojureScript environment
-5. Permit preserving application state during reloading
+5. Preserve application state during reloading
 6. Minimize dependencies and complexity (only requires tools.namespace and a cljs REPL)
 
 ## Installation
@@ -24,14 +24,16 @@ your ClojureScript REPL like so:
 ```clj
 (ns my-repl
   (:require [cljs.repl :as repl]
+            [cljs.repl.browser :as browser]
             [com.potetm.tire-iron :as ti]))
 
-(repl/repl :special-fns (ti/special-fns :source-dirs ["src"]
+(repl/repl (browser/repl-env ...args)
+           :special-fns (ti/special-fns :source-dirs ["src"]
                                         :state 'my-ns/my-repl-conn))
 ```
 
 This installs a few functions into your REPL. The most important
-of these are `ini` and `refresh`.
+of these are `init` and `refresh`.
 
 ```clj
 To quit, type: :cljs/quit
@@ -85,7 +87,6 @@ Refresh happens in the following order:
 'print-disabled  - See the disabled lists.
 ```
 
-## Example System
 ## License
 
 Copyright © 2016 Timothy Pote
