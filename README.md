@@ -11,17 +11,17 @@ Bringing the Reloaded Workflow to ClojureScript
 
 ## Installation
 ```
-[com.potetm.tire-iron "0.1.0"]
+[com.potetm/tire-iron "0.1.0"]
 ```
 
 tire-iron should not be included in your production code (e.g.
 it should be in a [leiningen profile](https://github.com/technomancy/leiningen/blob/master/doc/PROFILES.md)).
 
 ## Overview
-tire-iron works by creating `:special-fn`s that to you add to 
+tire-iron works by creating `:special-fn`s that to you add to
 your ClojureScript REPL like so:
 
-```
+```clj
 (ns my-repl
   (:require [cljs.repl :as repl]
             [com.potetm.tire-iron :as ti]))
@@ -31,14 +31,16 @@ your ClojureScript REPL like so:
 ```
 
 This installs a few functions into your REPL. The most important
-of these is `refresh`.
+of these are `ini` and `refresh`.
 
-```
+```clj
 To quit, type: :cljs/quit
 => nil
+(init)
+=> nil
 (refresh)
-Watch compilation log available at: target/public/js/watch.log
-:com.potetm.tire-iron/reloading (my-ns)
+:rebuilding
+:requesting-reload (com.potetm.browser-other com.potetm.browser-client)
 :ok
 => nil
 ```
@@ -47,47 +49,41 @@ Watch compilation log available at: target/public/js/watch.log
 Having multiple browser REPL connections will render your system unusable.
 To prevent this you should always:
 1. Put your REPL connection in your `:state` var
-2. Use `defonce` for your `:state` var 
+2. Use `defonce` for your `:state` var
 
 ## The Deets
 `com.potetm.tire-iron/special-fns` accepts the following arguments:
 
 ```
- :source-dirs - A list of strings pointing to the source directories you would like to watch
- :add-all? - Boolean indicating whether all namespaces should be refreshed
- :before - A symbol corresponding to a zero-arg client-side function that will be called before refreshing
- :after - A symbol corresponding to a zero-arg client-side function that will be called after refreshing
- :state - A symbol corresponding to a client-side var that holds any state you would like to persisent between refreshes
+:source-dirs - A list of strings pointing to the source directories you would like to watch
+:add-all? - Boolean indicating whether all namespaces should be refreshed
+:before - A symbol corresponding to a zero-arg client-side function that will be called before refreshing
+:after - A symbol corresponding to a zero-arg client-side function that will be called after refreshing
+:state - A symbol corresponding to a client-side var that holds any state you would like to persisent between refreshes
 ```
 
 All of these values can be overridden in the REPL by supplying them in
 the same manner to `refresh`.
 
-Since `:special-fns` are just symbols that are handled specially by the REPL, 
+Since `:special-fns` are just symbols that are handled specially by the REPL,
 `refresh` cannot be used as part of a script. Hence the reason why the `:before`, `:after`,
 and `:state` arguments have been provided.
 
 Refresh happens in the following order:
  1. :before is called
- 2. :state is copied to a private location on the client
- 3. refresh happens
- 4. :state is copied back to the original location
- 5. :after is called
+ 2. refresh happens
+ 3. :after is called
 
 `com.potetm.tire-iron/special-fns` returns a map of the following fns for use in the cljs repl.
 
 ```
-'refresh: refreshes :source-dirs. Accepts the same args as `special-fns`.
-          Any passed args will override the values passed to `special-fns`.
-'print-tis: prints the last state tire iron stored during refresh
-'recover-tis: replaces :state var with the last state tire iron stored during refresh.
-              Accepts an optional symbol pointing to an arbitrary target var.
+'init            - Must be called prior to refresh.
+'refresh         - refreshes :source-dirs. Any passed args will override the values passed to `special-fns`.
+'clear           - Clear the tracker state.
+'disable-unload! - Add a namespace to the disabled unload list.
+'disable-reload! - Add a namespace to the disabled reload list.
+'print-disabled  - See the disabled lists.
 ```
-
-The `print-tis` (print tire-iron-state) and `recover-tis` (recover tire-iron state)
-shouldn't be required for normal use, but have been provided for two reasons:
-1. in case the client gets into an unanticipated state
-2. in the interest of allowing the user full control over all tire-iron operations
 
 ## Example System
 ## License
