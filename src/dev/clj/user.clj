@@ -1,4 +1,4 @@
-(ns com.potetm.cljs-nrepl
+(ns user
   (:require [cemerick.piggieback :as pb]
             [cljs.build.api :as build]
             [cljs.repl :as repl]

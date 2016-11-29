@@ -1,6 +1,7 @@
 (ns com.potetm.tire-iron
   (:require [clojure.set :as set]
             [clojure.tools.namespace.dir :as dir]
+            [clojure.tools.namespace.file :as file]
             [clojure.tools.namespace.find :as find]
             [clojure.tools.namespace.track :as track]
             [cljs.analyzer :as ana]
@@ -90,29 +91,37 @@
            "  throw new Error(\"Cannot resolve symbol: " sym "\");\n"
            "}\n"))))
 
-(defn compile-unload-ns [state-sym ns]
+(defn nested-member-name [base nested-member]
+  (let [base-str (str base)
+        nested-member-str (str nested-member)]
+    (when (and (str/starts-with? nested-member-str base-str)
+               (not= nested-member-str base-str))
+      (-> nested-member-str
+          (str/replace (re-pattern (str base-str "[\\./]")) "")
+          (str/split #"\.|/")
+          first))))
+
+(defn nested-namespace-keys [ns all-namespaces]
+  (keep (partial nested-member-name ns)
+        all-namespaces))
+
+(defn nested-state-path-key [ns state-sym]
+  (nested-member-name ns state-sym))
+
+(defn compile-unload-ns [ns skip-keys]
   ;; We DO need to guarantee some location won't be cleared. Otherwise we might
   ;; blow away and rebuild their REPL connection.
   (let [ns (comp/munge ns)
-        loaded-libs (comp/munge 'cljs.core/*loaded-libs*)]
+        loaded-libs (comp/munge 'cljs.core/*loaded-libs*)
+        skip-keys (str "{" (str/join ",\n"
+                                     (map (comp #(str % ": true")
+                                                comp/munge)
+                                          skip-keys))
+                       "}")]
     (str "(function(){\n"
-         "var ns, ns_string, path, key, state_path_parts, on_state_path;\n"
+         "var ns, ns_string, path, key, state_path_parts, on_state_path, skip_keys;\n"
          "ns_string = \"" ns "\";\n"
-         "state_path_parts = ["
-         (str/join ","
-                   (map #(str "\"" % "\"")
-                        (object-path-parts (comp/munge state-sym))))
-         "];\n"
-         "on_state_path = function(k) {\n"
-         "  var i, full_name;\n"
-         "  full_name = ns_string + '.' + k;\n"
-         "  for (i = 0; i < state_path_parts.length; i++) {\n"
-         "    if (state_path_parts[i] === full_name) {\n"
-         "      return true;"
-         "    }\n"
-         "  }\n"
-         "  return false;\n"
-         "}\n;"
+         "skip_keys = " skip-keys ";\n"
          "path = goog.dependencies_.nameToPath[ns_string];\n"
          "goog.object.remove(goog.dependencies_.visited, path);\n"
          "goog.object.remove(goog.dependencies_.written, path);\n"
@@ -121,7 +130,7 @@
          "  ns = " ns ";\n"
          "  for (key in ns) {\n"
          "    if (!ns.hasOwnProperty(key)) { continue; }\n"
-         "    if (!on_state_path(key)) {\n"
+         "    if (!skip_keys[key]) {\n"
          "      delete ns[key];\n"
          "    }\n"
          "  }\n
@@ -129,9 +138,12 @@
          loaded-libs " = cljs.core.disj.call(null, " loaded-libs ", ns_string);\n"
          "})();")))
 
-(defn unload-nss-script [state-sym nss]
+(defn unload-nss-script [state-sym all-nss nss]
   (str/join "\n"
-            (map (partial compile-unload-ns state-sym)
+            (map #(compile-unload-ns %
+                                     (concat (nested-namespace-keys % all-nss)
+                                             (when-let [k (nested-state-path-key % state-sym)]
+                                               [k])))
                  nss)))
 
 (defn load-nss-sync [nss]
@@ -168,11 +180,11 @@
                  analyzer-env
                  repl-opts
                  'goog.net.jsloader))
-  (-refresh [this {:keys [repl-env before after state unload-nss load-nss]}]
+  (-refresh [this {:keys [repl-env before after state all-nss unload-nss load-nss]}]
     (eval-script repl-env
                  (str "(function() {\n"
                       (call-sym-script before)
-                      (unload-nss-script state unload-nss)
+                      (unload-nss-script state all-nss unload-nss)
                       "var d = " (load-nss-html-async load-nss) ";\n"
                       "d.addCallback(function(ret) {\n"
                       (call-sym-script after)
@@ -182,10 +194,10 @@
 (defrecord SyncRefresher []
   IRefresh
   (-initialize [this _opts])
-  (-refresh [this {:keys [repl-env before after state unload-nss load-nss]}]
+  (-refresh [this {:keys [repl-env before after state all-nss unload-nss load-nss]}]
     (eval-script repl-env
                  (str (call-sym-script before)
-                      (unload-nss-script state unload-nss)
+                      (unload-nss-script state all-nss unload-nss)
                       (load-nss-sync load-nss)
                       (call-sym-script after)))))
 
@@ -208,7 +220,8 @@
   (swap! tracker dir/scan-dirs source-dirs {:platform find/cljs
                                             :add-all? add-all?})
   (let [{:keys [::track/unload
-                ::track/load]}
+                ::track/load
+                ::file/filemap]}
         (swap! tracker remove-disabled disable-unload disable-load)]
     (when (seq load)
       (prn :rebuilding)
@@ -225,6 +238,7 @@
                            :before before
                            :after after
                            :state state
+                           :all-nss (vals filemap)
                            :unload-nss unload
                            :load-nss load})))
   (swap! tracker assoc ::track/load nil ::track/unload nil)
