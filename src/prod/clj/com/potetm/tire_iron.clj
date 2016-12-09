@@ -1,5 +1,6 @@
 (ns com.potetm.tire-iron
   (:require [clojure.set :as set]
+            [clojure.string :as str]
             [clojure.tools.namespace.dir :as dir]
             [clojure.tools.namespace.file :as file]
             [clojure.tools.namespace.find :as find]
@@ -9,8 +10,7 @@
             [cljs.closure :as closure]
             [cljs.compiler :as comp]
             [cljs.env :as env]
-            [cljs.repl :as repl]
-            [clojure.string :as str]))
+            [cljs.repl :as repl]))
 
 (defprotocol IRefresh
   (-initialize [this opts])
@@ -135,7 +135,7 @@
          "    }\n"
          "  }\n
          }\n"
-         loaded-libs " = cljs.core.disj.call(null, " loaded-libs ", ns_string);\n"
+         loaded-libs " = cljs.core.disj.call(null, " loaded-libs " || cljs.core.PersistentHashSet.EMPTY, ns_string);\n"
          "})();")))
 
 (defn unload-nss-script [state-sym all-nss nss]
@@ -156,15 +156,22 @@
   (let [loaded-libs (comp/munge 'cljs.core/*loaded-libs*)
         nss-array (str "["
                        (str/join ",\n"
+                                 (map (comp #(str "\"" % "\"")
+                                            comp/munge)
+                                      nss))
+                       "]")
+        nss-paths (str "["
+                       (str/join ",\n"
                                  (map (comp #(str "goog.basePath + goog.dependencies_.nameToPath[\"" % "\"]")
                                             comp/munge)
                                       nss))
                        "]")]
     (str "(function() {\n"
-         "var nss = " nss-array ";"
-         "return goog.net.jsloader.loadMany(nss).addCallback(function() {"
-         "  cljs.core.apply.call(null, cljs.core.conj, " loaded-libs ", nss);"
-         "  });"
+         "var nss = " nss-array ";\n"
+         "var nss_paths = " nss-paths ";\n"
+         "return goog.net.jsloader.loadMany(nss_paths).addCallback(function() {\n"
+         "  " loaded-libs " = cljs.core.apply.call(null, cljs.core.conj, " loaded-libs " || cljs.core.PersistentHashSet.EMPTY, nss);\n"
+         "  });\n"
          "})();")))
 
 (defn remove-disabled [tracker disable-unload disable-load]
@@ -314,6 +321,7 @@
                                    'clojure.browser.repl
                                    'clojure.browser.net}
                                  disable-load))
+        initial-build-complete? (promise)
         closed-settings (select-keys closed-settings
                                      [:before
                                       :after
@@ -323,16 +331,17 @@
      (wrap (fn [repl-env analyzer-env [_ & opts] repl-opts]
              (let [passed-settings (apply hash-map opts)]
                (if-let [r @refresher]
-                 (refresh* (merge {:refresher r
-                                   :tracker tracker
-                                   :source-dirs source-dirs
-                                   :disable-unload @disable-unload
-                                   :disable-load @disable-load
-                                   :repl-env repl-env
-                                   :analyzer-env analyzer-env
-                                   :repl-opts repl-opts}
-                                  closed-settings
-                                  passed-settings))
+                 (do @initial-build-complete?
+                     (refresh* (merge {:refresher r
+                                       :tracker tracker
+                                       :source-dirs source-dirs
+                                       :disable-unload @disable-unload
+                                       :disable-load @disable-load
+                                       :repl-env repl-env
+                                       :analyzer-env analyzer-env
+                                       :repl-opts repl-opts}
+                                      closed-settings
+                                      passed-settings)))
                  (binding [*out* *err*]
                    (println "tire-iron not initialized"))))))
 
@@ -340,11 +349,19 @@
      (wrap (fn [repl-env analyzer-env _ repl-opts]
              (let [refresher (or @refresher
                                  (reset! refresher
-                                         (determine-refresher repl-env)))]
+                                         (determine-refresher repl-env)))
+                   env env/*compiler*
+                   ^Runnable build #(do (closure/build (apply build/inputs source-dirs)
+                                                       repl-opts
+                                                       env)
+                                        (deliver initial-build-complete? true))]
                (-initialize refresher
                             {:repl-env repl-env
                              :analyzer-env analyzer-env
-                             :repl-opts repl-opts}))))
+                             :repl-opts repl-opts})
+               ;; Kick off a build. That will speed up the first reload which
+               ;; takes the longest to build.
+               (.start (Thread. build)))))
 
      'print-disabled
      (wrap (fn [& _]
