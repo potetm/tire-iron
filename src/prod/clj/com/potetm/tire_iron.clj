@@ -10,7 +10,26 @@
             [cljs.closure :as closure]
             [cljs.compiler :as comp]
             [cljs.env :as env]
-            [cljs.repl :as repl]))
+            [cljs.repl :as repl])
+  (:import (com.sun.nio.file SensitivityWatchEventModifier)
+           (java.nio.file Files
+                          FileSystem
+                          FileSystems
+                          FileVisitResult
+                          LinkOption
+                          Path
+                          SimpleFileVisitor
+                          StandardWatchEventKinds
+                          WatchEvent
+                          WatchEvent$Kind
+                          WatchEvent$Modifier)
+           (java.io IOException)
+           (java.util.concurrent Executors
+                                 ExecutorService
+                                 ThreadFactory
+                                 TimeUnit)))
+
+(defonce ^ExecutorService watch-exec nil)
 
 (defprotocol IRefresh
   (-initialize [this opts])
@@ -219,7 +238,10 @@
                         before
                         after
                         state
-                        add-all?]}]
+                        add-all?
+                        compiler-env]
+                 :or
+                 {compiler-env env/*compiler*}}]
   (doseq [s (filter some? [before after state])]
     (assert (symbol? s) "value must be a symbol")
     (assert (namespace s)
@@ -236,7 +258,7 @@
       ;; Once we're here, no checks are needed.
       (closure/build (apply build/inputs source-dirs)
                      repl-opts
-                     env/*compiler*))
+                     compiler-env))
     (when (or (seq unload) (seq load))
       (prn :requesting-reload load)
       (-refresh refresher {:repl-env repl-env
@@ -250,6 +272,61 @@
                            :load-nss load})))
   (swap! tracker assoc ::track/load nil ::track/unload nil)
   (println :ok))
+
+(defn recursive-register [watcher root]
+  (Files/walkFileTree
+    root
+    (proxy [SimpleFileVisitor] []
+      (preVisitDirectory [^Path dir attrs]
+        (.register dir
+                   watcher
+                   (into-array WatchEvent$Kind
+                               [StandardWatchEventKinds/ENTRY_CREATE
+                                StandardWatchEventKinds/ENTRY_DELETE
+                                StandardWatchEventKinds/ENTRY_MODIFY])
+                   (into-array WatchEvent$Modifier
+                               [SensitivityWatchEventModifier/HIGH]))
+        FileVisitResult/CONTINUE))))
+
+(defn start-watch [^ExecutorService exec ^FileSystem fs refresh-opts]
+  (.submit exec
+           ^Callable
+           (fn []
+             (try
+               (with-open [ws (.newWatchService fs)]
+                 (doseq [^Path root (map #(.getPath fs % (make-array String 0))
+                                         (:source-dirs refresh-opts))]
+                   (recursive-register ws root))
+                 (while true
+                   (when-let [k (.poll ws 300 TimeUnit/MILLISECONDS)]
+                     (when-let [events (and (.reset k)
+                                            (seq (.pollEvents k)))]
+                       (doseq [^WatchEvent e events]
+                         (if (= (.kind e) StandardWatchEventKinds/ENTRY_CREATE)
+                           (let [f (.context e)]
+                             (if (Files/isDirectory f (make-array LinkOption 0))
+                               (recursive-register ws f)))))
+                       (when (some (comp #(or (.endsWith % ".cljs")
+                                              (.endsWith % ".cljc"))
+                                         str
+                                         #(.context %))
+                                   events)
+                         (println "Watcher Refreshing...")
+                         (refresh* refresh-opts))))))
+               (catch IOException io
+                 (comment (println "REPL shutdown detected.")))
+               (catch InterruptedException ie
+                 (comment (println "Interrupted")))
+               (catch Exception e
+                 (binding [*out* *err*]
+                   (println (.getMessage e))
+                   (println (.printStackTrace e *out*))))
+               (finally
+                 (println "Shutting down watcher.")
+                 (.shutdown exec))))))
+
+(defn stop-watch []
+  (.shutdownNow watch-exec))
 
 (defn maybe-quoted->symbol [symbol-or-list]
   (if (list? symbol-or-list)
@@ -316,12 +393,12 @@
       {source-dirs ["src"]}}]
   (let [refresher (atom refresher)
         tracker (atom (track/tracker))
+        initial-build-complete? (promise)
         disable-unload (atom (into #{} disable-unload))
         disable-load (atom (into #{'cljs.core
                                    'clojure.browser.repl
                                    'clojure.browser.net}
                                  disable-load))
-        initial-build-complete? (promise)
         closed-settings (select-keys closed-settings
                                      [:before
                                       :after
@@ -345,23 +422,55 @@
                  (binding [*out* *err*]
                    (println "tire-iron not initialized"))))))
 
+     'start-watch (wrap (fn [repl-env analyzer-env [_ & opts] repl-opts]
+                          (let [passed-settings (apply hash-map opts)
+                                exec (Executors/newSingleThreadExecutor
+                                       (reify ThreadFactory
+                                         (newThread [this runnable]
+                                           (doto (Thread. runnable
+                                                          "tire-iron-watcher-thread")
+                                             (.setDaemon true)))))]
+                            (if-let [r @refresher]
+                              (do @initial-build-complete?
+                                  (alter-var-root #'watch-exec (constantly exec))
+                                  (start-watch watch-exec
+                                               (FileSystems/getDefault)
+                                               (merge {:refresher r
+                                                       :tracker tracker
+                                                       :source-dirs source-dirs
+                                                       :disable-unload @disable-unload
+                                                       :disable-load @disable-load
+                                                       :repl-env repl-env
+                                                       :analyzer-env analyzer-env
+                                                       :repl-opts repl-opts
+                                                       :compiler-env env/*compiler*}
+                                                      closed-settings
+                                                      passed-settings)))
+                              (binding [*out* *err*]
+                                (println "tire-iron not initialized"))))))
+
+     'stop-watch (wrap (fn [_ _ _ _]
+                         (stop-watch)))
+
      'init
      (wrap (fn [repl-env analyzer-env _ repl-opts]
-             (let [refresher (or @refresher
+             (let [env env/*compiler*
+                   ^Runnable build #(try
+                                      (closure/build (apply build/inputs source-dirs)
+                                                     repl-opts
+                                                     env)
+                                      (finally
+                                        (deliver initial-build-complete? true)))
+                   ;; Kick off a build. That will speed up the first reload which
+                   ;; takes the longest to build.
+                   _ (.start (Thread. build))
+                   refresher (or @refresher
                                  (reset! refresher
-                                         (determine-refresher repl-env)))
-                   env env/*compiler*
-                   ^Runnable build #(do (closure/build (apply build/inputs source-dirs)
-                                                       repl-opts
-                                                       env)
-                                        (deliver initial-build-complete? true))]
+                                         (determine-refresher repl-env)))]
                (-initialize refresher
                             {:repl-env repl-env
                              :analyzer-env analyzer-env
-                             :repl-opts repl-opts})
-               ;; Kick off a build. That will speed up the first reload which
-               ;; takes the longest to build.
-               (.start (Thread. build)))))
+                             :repl-opts repl-opts}))))
 
      'print-disabled
      (wrap (fn [& _]
