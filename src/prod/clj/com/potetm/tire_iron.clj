@@ -1,5 +1,6 @@
 (ns com.potetm.tire-iron
-  (:require [clojure.set :as set]
+  (:require [clojure.java.io :as io]
+            [clojure.set :as set]
             [clojure.string :as str]
             [clojure.tools.namespace.dir :as dir]
             [clojure.tools.namespace.file :as file]
@@ -165,13 +166,48 @@
                                                [k])))
                  nss)))
 
-(defn load-nss-sync [nss]
-  (str/join "\n"
-            (map (comp #(str "goog.require('" % "');")
-                       comp/munge)
-                 nss)))
+;; These js-file and deps fns rely on quite a few non-API calls.
+;; They'll be pretty brittle in the face of change :/
+;; That said, I've no reason to believe these calls change a whole lot.
+(defn js-file->assumed-compiled [output-dir js-file]
+  (let [f (io/file (closure/rel-output-path js-file))]
+    (assoc js-file
+      :url (.toURI
+             (if (.isAbsolute f)
+               f
+               (.getAbsoluteFile (io/file output-dir
+                                          f)))))))
 
-(defn load-nss-html-async [nss]
+(defn deps-as-js-files [opts compiler-env ns]
+  (remove (comp #{:seed}
+                :type)
+          (closure/add-dependencies opts
+                                    {:requires [(name ns)]
+                                     :type :seed
+                                     :uri (:uri (closure/source-for-namespace ns
+                                                                              compiler-env))})))
+
+(defn add-deps [{:keys [output-dir] :as opts}
+                compiler-env
+                nss]
+  ;; lol. clojure/cljs-dependencies (called by clojure/add-dependencies) blindly
+  ;; does a deref on env/*compiler* and invokes it. Crazytown.
+  (binding [env/*compiler* compiler-env]
+    (apply str
+           (map (comp (partial closure/add-dep-string opts)
+                      (partial js-file->assumed-compiled output-dir))
+                (distinct (mapcat (partial deps-as-js-files opts compiler-env)
+                                  nss))))))
+
+(defn load-nss-sync [opts compiler-env nss]
+  (str (add-deps opts compiler-env nss)
+       "\n"
+       (str/join "\n"
+                 (map (comp #(str "goog.require('" % "');")
+                            comp/munge)
+                      nss))))
+
+(defn load-nss-html-async [opts compiler-env nss]
   (let [loaded-libs (comp/munge 'cljs.core/*loaded-libs*)
         nss-array (str "["
                        (str/join ",\n"
@@ -186,6 +222,7 @@
                                       nss))
                        "]")]
     (str "(function() {\n"
+         (add-deps opts compiler-env nss)
          "var nss = " nss-array ";\n"
          "var nss_paths = " nss-paths ";\n"
          "return goog.net.jsloader.loadMany(nss_paths).addCallback(function() {\n"
@@ -206,12 +243,20 @@
                  analyzer-env
                  repl-opts
                  'goog.net.jsloader))
-  (-refresh [this {:keys [repl-env before after state all-nss unload-nss load-nss]}]
+  (-refresh [this {:keys [repl-env
+                          build-opts
+                          compiler-env
+                          before
+                          after
+                          state
+                          all-nss
+                          unload-nss
+                          load-nss]}]
     (eval-script repl-env
                  (str "(function() {\n"
                       (call-sym-script before)
                       (unload-nss-script state all-nss unload-nss)
-                      "var d = " (load-nss-html-async load-nss) ";\n"
+                      "var d = " (load-nss-html-async build-opts compiler-env load-nss) ";\n"
                       "d.addCallback(function(ret) {\n"
                       (call-sym-script after)
                       "  });\n"
@@ -220,12 +265,27 @@
 (defrecord SyncRefresher []
   IRefresh
   (-initialize [this _opts])
-  (-refresh [this {:keys [repl-env before after state all-nss unload-nss load-nss]}]
+  (-refresh [this {:keys [repl-env
+                          build-opts
+                          compiler-env
+                          before
+                          after
+                          state
+                          all-nss
+                          unload-nss
+                          load-nss]}]
     (eval-script repl-env
                  (str (call-sym-script before)
                       (unload-nss-script state all-nss unload-nss)
-                      (load-nss-sync load-nss)
+                      (load-nss-sync build-opts compiler-env load-nss)
                       (call-sym-script after)))))
+
+;; copied from cljs.repl/env->opts
+(defn repl-env->build-opts [repl-opts repl-env]
+  (merge (into {} repl-env)
+         {:optimizations (:optimizations repl-env :none)
+          :output-dir (:working-dir repl-env ".repl")}
+         repl-opts))
 
 (defn refresh* [{:keys [refresher
                         tracker
@@ -248,7 +308,8 @@
             "value must be a namespace-qualified symbol"))
   (swap! tracker dir/scan-dirs source-dirs {:platform find/cljs
                                             :add-all? add-all?})
-  (let [{:keys [::track/unload
+  (let [build-opts (repl-env->build-opts repl-opts repl-env)
+        {:keys [::track/unload
                 ::track/load
                 ::file/filemap]}
         (swap! tracker remove-disabled disable-unload disable-load)]
@@ -257,13 +318,15 @@
       ;; build.api does some expensive input checks
       ;; Once we're here, no checks are needed.
       (closure/build (apply build/inputs source-dirs)
-                     repl-opts
+                     build-opts
                      compiler-env))
     (when (or (seq unload) (seq load))
       (prn :requesting-reload load)
-      (-refresh refresher {:repl-env repl-env
+      (-refresh refresher {:compiler-env compiler-env
+                           :repl-env repl-env
                            :analyzer-env analyzer-env
                            :repl-opts repl-opts
+                           :build-opts build-opts
                            :before before
                            :after after
                            :state state
