@@ -107,7 +107,15 @@
                                  :serve-static true
                                  :static-dir "target/public")
                 :analyze-path "src/dev/weasel"
+                :main 'com.potetm.weasel-client
+                :output-to "target/public/js/client.js"
                 :output-dir "target/public/js"
+                :asset-path "js"
+                :source-map true
+                :optimizations :none
+                :pretty-print true
+                :verbose false
+                :parallel-build true
                 :special-fns (ti/special-fns
                                :source-dirs ["src/dev/weasel"]
                                :state 'com.potetm.weasel-client/state

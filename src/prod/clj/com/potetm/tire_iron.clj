@@ -388,9 +388,6 @@
                  (println "Shutting down watcher.")
                  (.shutdown exec))))))
 
-(defn stop-watch []
-  (.shutdownNow watch-exec))
-
 (defn maybe-quoted->symbol [symbol-or-list]
   (if (list? symbol-or-list)
     (second symbol-or-list)
@@ -415,6 +412,24 @@
     (->HtmlAsyncRefresher)
     (->SyncRefresher)))
 
+(defn init [{:keys [repl-opts
+                    repl-env
+                    analyzer-env
+                    refresher]}]
+  (let [refresher (or @refresher
+                      (reset! refresher
+                              (determine-refresher repl-env)))]
+    (-initialize refresher
+                 {:repl-env repl-env
+                  :analyzer-env analyzer-env
+                  :repl-opts repl-opts})))
+
+(defn stop-watch
+  "Stop a watch that was started during a now stopped REPL session."
+  []
+  (when watch-exec
+    (.shutdownNow watch-exec)))
+
 (defn special-fns
   "args:
      :source-dirs - A list of strings pointing to the source directories you would like to watch
@@ -423,7 +438,7 @@
      :after - A symbol corresponding to a zero-arg client-side function that will be called after refreshing
      :state - A symbol corresponding to a client-side var that holds any state you would like to persisent between refreshes
 
-   Everything but :source-dirs can be overridden in the repl by supplying them to 'refresh.
+   :before, :after, and :state can be overridden in the repl by supplying them to 'refresh or 'start-watch.
 
    The :state var will not be touched during unloading. However the namespace will
    be reloaded, so put it in a `defonce`. You must put your repl connection in
@@ -436,13 +451,21 @@
 
    Returns a map of the following fns for use in the cljs repl.
 
-   'init    - Must be called prior to refresh.
    'refresh - refreshes :source-dirs.
               Any passed args will override the values passed to `special-fns`.
    'clear   - Clear the tracker state.
+   'start-watch - Start a watcher* that will automatically call refresh when any
+                  file under :source-dirs changes.
+   'stop-watch  - Stop a running watcher.
    'disable-unload! - Add a namespace to the disabled unload list.
    'disable-reload! - Add a namespace to the disabled reload list.
-   'print-disabled  - See the disabled lists."
+   'print-disabled  - See the disabled lists.
+
+   *NOTE: tire-iron has no access to the lifecycle of the REPL, so it cannot
+   automatically stop a watcher for you. Hence 'stop-watch has been provided for
+   you to manage it yourself. If you forget to stop a watch before you end your
+   repl session, you can call the only other API call in this namespace: stop-watch.
+   "
   [& {:keys [source-dirs
              before
              after
@@ -454,36 +477,38 @@
       :as closed-settings
       :or
       {source-dirs ["src"]}}]
-  (let [refresher (atom refresher)
+  (let [initialized? (atom false)
+        refresher (atom refresher)
         tracker (atom (track/tracker))
-        initial-build-complete? (promise)
         disable-unload (atom (into #{} disable-unload))
         disable-load (atom (into #{'cljs.core
                                    'clojure.browser.repl
                                    'clojure.browser.net}
                                  disable-load))
-        closed-settings (select-keys closed-settings
-                                     [:before
-                                      :after
-                                      :state
-                                      :add-all?])]
+        select-overridable-keys #(select-keys % [:before
+                                                 :after
+                                                 :state
+                                                 :add-all?])
+        closed-settings (select-overridable-keys closed-settings)]
     {'refresh
      (wrap (fn [repl-env analyzer-env [_ & opts] repl-opts]
              (let [passed-settings (apply hash-map opts)]
-               (if-let [r @refresher]
-                 (do @initial-build-complete?
-                     (refresh* (merge {:refresher r
-                                       :tracker tracker
-                                       :source-dirs source-dirs
-                                       :disable-unload @disable-unload
-                                       :disable-load @disable-load
-                                       :repl-env repl-env
-                                       :analyzer-env analyzer-env
-                                       :repl-opts repl-opts}
-                                      closed-settings
-                                      passed-settings)))
-                 (binding [*out* *err*]
-                   (println "tire-iron not initialized"))))))
+               (when-not @initialized?
+                 (init {:repl-opts repl-opts
+                        :repl-env repl-env
+                        :analyzer-env analyzer-env
+                        :refresher refresher})
+                 (reset! initialized? true))
+               (refresh* (merge {:refresher @refresher
+                                 :tracker tracker
+                                 :source-dirs source-dirs
+                                 :disable-unload @disable-unload
+                                 :disable-load @disable-load
+                                 :repl-env repl-env
+                                 :analyzer-env analyzer-env
+                                 :repl-opts repl-opts}
+                                closed-settings
+                                (select-overridable-keys passed-settings))))))
 
      'start-watch (wrap (fn [repl-env analyzer-env [_ & opts] repl-opts]
                           (let [passed-settings (apply hash-map opts)
@@ -493,47 +518,29 @@
                                            (doto (Thread. runnable
                                                           "tire-iron-watcher-thread")
                                              (.setDaemon true)))))]
-                            (if-let [r @refresher]
-                              (do @initial-build-complete?
-                                  (alter-var-root #'watch-exec (constantly exec))
-                                  (start-watch watch-exec
-                                               (FileSystems/getDefault)
-                                               (merge {:refresher r
-                                                       :tracker tracker
-                                                       :source-dirs source-dirs
-                                                       :disable-unload @disable-unload
-                                                       :disable-load @disable-load
-                                                       :repl-env repl-env
-                                                       :analyzer-env analyzer-env
-                                                       :repl-opts repl-opts
-                                                       :compiler-env env/*compiler*}
-                                                      closed-settings
-                                                      passed-settings)))
-                              (binding [*out* *err*]
-                                (println "tire-iron not initialized"))))))
+                            (alter-var-root #'watch-exec (constantly exec))
+                            (when-not @initialized?
+                              (init {:repl-opts repl-opts
+                                     :repl-env repl-env
+                                     :analyzer-env analyzer-env
+                                     :refresher refresher})
+                              (reset! initialized? true))
+                            (start-watch watch-exec
+                                         (FileSystems/getDefault)
+                                         (merge {:refresher @refresher
+                                                 :tracker tracker
+                                                 :source-dirs source-dirs
+                                                 :disable-unload @disable-unload
+                                                 :disable-load @disable-load
+                                                 :repl-env repl-env
+                                                 :analyzer-env analyzer-env
+                                                 :repl-opts repl-opts
+                                                 :compiler-env env/*compiler*}
+                                                closed-settings
+                                                (select-overridable-keys passed-settings))))))
 
      'stop-watch (wrap (fn [_ _ _ _]
                          (stop-watch)))
-
-     'init
-     (wrap (fn [repl-env analyzer-env _ repl-opts]
-             (let [env env/*compiler*
-                   ^Runnable build #(try
-                                      (closure/build (apply build/inputs source-dirs)
-                                                     repl-opts
-                                                     env)
-                                      (finally
-                                        (deliver initial-build-complete? true)))
-                   ;; Kick off a build. That will speed up the first reload which
-                   ;; takes the longest to build.
-                   _ (.start (Thread. build))
-                   refresher (or @refresher
-                                 (reset! refresher
-                                         (determine-refresher repl-env)))]
-               (-initialize refresher
-                            {:repl-env repl-env
-                             :analyzer-env analyzer-env
-                             :repl-opts repl-opts}))))
 
      'print-disabled
      (wrap (fn [& _]
