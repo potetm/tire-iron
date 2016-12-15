@@ -9,7 +9,8 @@
             [clojure.java.io :as io]
             [clojure.tools.namespace.repl :as r]
             [com.potetm.tire-iron :as ti]
-            [weasel.repl.websocket :as weasel])
+            [weasel.repl.websocket :as weasel]
+            [weasel.repl.server :as wserver])
   (:import (java.io File)))
 
 (defn browser-build []
@@ -121,6 +122,9 @@
                                :state 'com.potetm.weasel-client/state
                                :before 'com.potetm.weasel-client/before
                                :after 'com.potetm.weasel-client/after)))
+
+(defn stop-weasel []
+  (wserver/stop))
 
 ;; TODO: Try with austin
 
