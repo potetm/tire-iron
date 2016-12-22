@@ -1,10 +1,12 @@
 (ns com.potetm.weasel-client
   (:require [weasel.repl :as repl]
-            [com.potetm.weasel-other :as other-ns]))
+            [com.potetm.weasel-other :as other-ns])
+  (:require-macros [com.potetm.tire-iron.cljs-macros :as m]))
 
 (defonce state {:repl-conn (repl/connect "ws://localhost:9001")})
 
 (defn before []
+  (m/foo-tha-foo)
   (println "before"))
 
 (defn after []

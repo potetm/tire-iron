@@ -5,6 +5,8 @@
             [clojure.tools.namespace.dir :as dir]
             [clojure.tools.namespace.file :as file]
             [clojure.tools.namespace.find :as find]
+            [clojure.tools.namespace.reload :as reload]
+            [clojure.tools.namespace.repl :as r]
             [clojure.tools.namespace.track :as track]
             [cljs.analyzer :as ana]
             [cljs.build.api :as build]
@@ -225,7 +227,11 @@
          (add-deps opts compiler-env nss)
          "var nss = " nss-array ";\n"
          "var nss_paths = " nss-paths ";\n"
-         "return goog.net.jsloader.loadMany(nss_paths).addCallback(function() {\n"
+         ;; cleanupWhenDone: true appears to cleanup from the head in chrome.
+         ;; Doesn't appear to clean up from the body. (I'm not sure why it adds a script tag to both.)
+         ;; I'll leave this for now, but I might have to swing back through and
+         ;; find a way to clean up scritp tags from the body.
+         "return goog.net.jsloader.loadMany(nss_paths, {cleanupWhenDone: true}).addCallback(function() {\n"
          "  " loaded-libs " = cljs.core.apply.call(null, cljs.core.conj, " loaded-libs " || cljs.core.PersistentHashSet.EMPTY, nss);\n"
          "  });\n"
          "})();")))
@@ -287,6 +293,56 @@
           :output-dir (:working-dir repl-env ".repl")}
          repl-opts))
 
+;; Copied from clojure.tools.namespace/repl. This is definitionally
+;; the same, but I need to get the affected namespaces.
+(defn do-refresh-macros [current-ns]
+  (let [current-ns-refers (#'r/referred current-ns)
+        current-ns-aliases (#'r/aliased current-ns)]
+    (alter-var-root #'r/refresh-tracker dir/scan-dirs r/refresh-dirs {:platform find/clj})
+    (alter-var-root #'r/refresh-tracker #'r/remove-disabled)
+    (#'r/print-pending-reloads r/refresh-tracker)
+    (let [affected-nss (distinct (concat (::track/unload r/refresh-tracker)
+                                         (::track/load r/refresh-tracker)))]
+      (alter-var-root #'r/refresh-tracker reload/track-reload)
+      (let [result (#'r/print-and-return r/refresh-tracker)]
+        (if (= :ok result)
+          {::macro-reload-status :ok
+           ::affected-namespaces affected-nss}
+          ;; There was an error, recover as much as we can:
+          (do (when-not (or (false? (::r/unload (meta current-ns)))
+                            (false? (::r/load (meta current-ns))))
+                (#'r/recover-ns current-ns-refers current-ns-aliases))
+              ;; Return the Exception to the REPL:
+              {::macro-reload-status :error
+               ::error result}))))))
+
+(defn refresh-macros-and-mark-dependents
+  "This could be done via tools.namespace, but the compiler needs to be notified
+  that these namespaces need to be re-compiled.
+
+  As it is, this *must* be run prior to dir/scan-dirs."
+  [original-ns compiler-env]
+  (let [{:keys [::macro-reload-status
+                ::affected-namespaces] :as result}
+        (binding [*ns* original-ns]
+          (do-refresh-macros original-ns))]
+    (when (= macro-reload-status :ok)
+      ;; There is already a function for this: cljs.closure/mark-cljs-ns-for-recompile!
+      ;; However it sets last modified to 5000, and tools.namespace filters on
+      ;; last modified > last checked (clojure.tools.namespace.dir/modified-files.
+      ;; cljs seems to only care if last modified output != last modified input
+      ;; (cljs.util/changed?). So this ought to do.
+      (doseq [dep (closure/cljs-dependents-for-macro-namespaces compiler-env
+                                                                affected-namespaces)]
+        ;; The cljs version also uses `target-file-for-cljs-ns`, which seems like a
+        ;; hack. The source transitively changed, not output file. Not sure what
+        ;; the reasoning was there. Either way, tools.namespace needs the source
+        ;; file changed.
+        (let [f (io/file (:uri (closure/source-for-namespace dep compiler-env)))]
+          (when (.exists f)
+            (.setLastModified f (System/currentTimeMillis))))))
+    result))
+
 (defn refresh* [{:keys [refresher
                         tracker
                         disable-unload
@@ -299,42 +355,50 @@
                         after
                         state
                         add-all?
-                        compiler-env]
+                        compiler-env
+                        original-ns]
                  :or
                  {compiler-env env/*compiler*}}]
   (doseq [s (filter some? [before after state])]
     (assert (symbol? s) "value must be a symbol")
     (assert (namespace s)
             "value must be a namespace-qualified symbol"))
-  (swap! tracker dir/scan-dirs source-dirs {:platform find/cljs
-                                            :add-all? add-all?})
   (let [build-opts (repl-env->build-opts repl-opts repl-env)
-        {:keys [::track/unload
-                ::track/load
-                ::file/filemap]}
-        (swap! tracker remove-disabled disable-unload disable-load)]
-    (when (seq load)
-      (prn :rebuilding)
-      ;; build.api does some expensive input checks
-      ;; Once we're here, no checks are needed.
-      (closure/build (apply build/inputs source-dirs)
-                     build-opts
-                     compiler-env))
-    (when (or (seq unload) (seq load))
-      (prn :requesting-reload load)
-      (-refresh refresher {:compiler-env compiler-env
-                           :repl-env repl-env
-                           :analyzer-env analyzer-env
-                           :repl-opts repl-opts
-                           :build-opts build-opts
-                           :before before
-                           :after after
-                           :state state
-                           :all-nss (vals filemap)
-                           :unload-nss unload
-                           :load-nss load})))
-  (swap! tracker assoc ::track/load nil ::track/unload nil)
-  (println :ok))
+        {:keys [::macro-reload-status]
+         :as macro-status}
+        ;; must run this first so deps will be touched
+        (refresh-macros-and-mark-dependents original-ns
+                                            compiler-env)]
+    (if (= :ok macro-reload-status)
+      (let [_ (swap! tracker dir/scan-dirs source-dirs {:platform find/cljs
+                                                        :add-all? add-all?})
+            {:keys [::track/unload
+                    ::track/load
+                    ::file/filemap]}
+            (swap! tracker remove-disabled disable-unload disable-load)]
+        (when (seq load)
+          (prn :rebuilding)
+          ;; build.api does some expensive input checks
+          ;; Once we're here, no checks are needed.
+          (closure/build (apply build/inputs source-dirs)
+                         build-opts
+                         compiler-env))
+        (when (or (seq unload) (seq load))
+          (prn :requesting-reload load)
+          (-refresh refresher {:compiler-env compiler-env
+                               :repl-env repl-env
+                               :analyzer-env analyzer-env
+                               :repl-opts repl-opts
+                               :build-opts build-opts
+                               :before before
+                               :after after
+                               :state state
+                               :all-nss (vals filemap)
+                               :unload-nss unload
+                               :load-nss load}))
+        (swap! tracker assoc ::track/load nil ::track/unload nil)
+        (println :ok))
+      (println macro-status))))
 
 (defn recursive-register [watcher root]
   (Files/walkFileTree
@@ -375,15 +439,21 @@
                                          #(.context %))
                                    events)
                          (println "Watcher Refreshing...")
-                         (refresh* refresh-opts))))))
-               (catch IOException io
-                 (comment (println "REPL shutdown detected.")))
-               (catch InterruptedException ie
-                 (comment (println "Interrupted")))
-               (catch Exception e
-                 (binding [*out* *err*]
-                   (println (.getMessage e))
-                   (println (.printStackTrace e *out*))))
+                         (try
+                           (refresh* refresh-opts)
+                           (catch IOException io
+                             ;; Repl disconnect is most likely to manifest as
+                             ;; IOException. (I know weasel diconnect throws this.)
+                             (println "Disconnect detected.")
+                             (throw io))
+                           (catch InterruptedException ie
+                             (comment (println "Interrupted"))
+                             (throw ie))
+                           (catch Exception e
+                             (binding [*out* *err*]
+                               (println (class e))
+                               (println (.getMessage e))
+                               (.printStackTrace e *out*)))))))))
                (finally
                  (println "Shutting down watcher.")
                  (.shutdown exec))))))
@@ -506,41 +576,55 @@
                                  :disable-load @disable-load
                                  :repl-env repl-env
                                  :analyzer-env analyzer-env
-                                 :repl-opts repl-opts}
+                                 :repl-opts repl-opts
+                                 :original-ns *ns*}
                                 closed-settings
                                 (select-overridable-keys passed-settings))))))
 
      'start-watch (wrap (fn [repl-env analyzer-env [_ & opts] repl-opts]
-                          (let [passed-settings (apply hash-map opts)
-                                exec (Executors/newSingleThreadExecutor
-                                       (reify ThreadFactory
-                                         (newThread [this runnable]
-                                           (doto (Thread. runnable
-                                                          "tire-iron-watcher-thread")
-                                             (.setDaemon true)))))]
-                            (alter-var-root #'watch-exec (constantly exec))
-                            (when-not @initialized?
-                              (init {:repl-opts repl-opts
-                                     :repl-env repl-env
-                                     :analyzer-env analyzer-env
-                                     :refresher refresher})
-                              (reset! initialized? true))
-                            (start-watch watch-exec
-                                         (FileSystems/getDefault)
-                                         (merge {:refresher @refresher
-                                                 :tracker tracker
-                                                 :source-dirs source-dirs
-                                                 :disable-unload @disable-unload
-                                                 :disable-load @disable-load
-                                                 :repl-env repl-env
-                                                 :analyzer-env analyzer-env
-                                                 :repl-opts repl-opts
-                                                 :compiler-env env/*compiler*}
-                                                closed-settings
-                                                (select-overridable-keys passed-settings))))))
+                          (if (and watch-exec (not (.isShutdown watch-exec)))
+                            (binding [*out* *err*]
+                              (println "Watch already running. Did you mean to (stop-watch) first?"))
+                            (let [passed-settings (apply hash-map opts)
+                                  exec (Executors/newSingleThreadExecutor
+                                         (reify ThreadFactory
+                                           (newThread [this runnable]
+                                             (doto (Thread. runnable
+                                                            "tire-iron-watcher-thread")
+                                               (.setDaemon true)))))]
+                              (alter-var-root #'watch-exec (constantly exec))
+                              (when-not @initialized?
+                                (init {:repl-opts repl-opts
+                                       :repl-env repl-env
+                                       :analyzer-env analyzer-env
+                                       :refresher refresher})
+                                (reset! initialized? true))
+                              (start-watch watch-exec
+                                           (FileSystems/getDefault)
+                                           (merge {:refresher @refresher
+                                                   :tracker tracker
+                                                   :source-dirs source-dirs
+                                                   :disable-unload @disable-unload
+                                                   :disable-load @disable-load
+                                                   :repl-env repl-env
+                                                   :analyzer-env analyzer-env
+                                                   :repl-opts repl-opts
+                                                   :compiler-env env/*compiler*
+                                                   :original-ns *ns*}
+                                                  closed-settings
+                                                  (select-overridable-keys passed-settings)))))))
 
      'stop-watch (wrap (fn [_ _ _ _]
                          (stop-watch)))
+
+     ;; manual init in case the page gets reloaded and you have a
+     ;; resillient repl env
+     'init (fn [repl-env analyzer-env _ repl-opts]
+             (init {:repl-opts repl-opts
+                    :repl-env repl-env
+                    :analyzer-env analyzer-env
+                    :refresher refresher})
+             (reset! initialized? true))
 
      'print-disabled
      (wrap (fn [& _]

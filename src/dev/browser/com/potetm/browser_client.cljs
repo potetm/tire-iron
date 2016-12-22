@@ -1,6 +1,7 @@
 (ns com.potetm.browser-client
   (:require [clojure.browser.repl :as repl]
-            [com.potetm.browser-other :as other-ns]))
+            [com.potetm.browser-other :as other-ns])
+  (:require-macros [com.potetm.tire-iron.cljs-macros :as m]))
 
 ;; Still need to defonce. Even though we take care to preserve this var
 ;; during unloading, you need to make sure it's not reset during ns loading.
