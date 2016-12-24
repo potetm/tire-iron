@@ -14,7 +14,9 @@
             [cljs.compiler :as comp]
             [cljs.env :as env]
             [cljs.repl :as repl])
-  (:import (com.sun.nio.file SensitivityWatchEventModifier)
+  (:import (clojure.lang ExceptionInfo)
+           (com.google.common.io ByteStreams)
+           (com.sun.nio.file SensitivityWatchEventModifier)
            (java.nio.file Files
                           FileSystem
                           FileSystems
@@ -35,6 +37,12 @@
 (defonce ^ExecutorService watch-exec nil)
 
 (defprotocol IRefresh
+  "-refresh is responsible for making some attempt to recover in the event
+  initialization gets undone, which will happen on page refresh.
+
+  The goal is to make initialization transparent to the user. I'm not yet sure
+  how feasible that is, so the underlying API is going to be init/refresh until I'm
+  confident we can make refresh a standalone concept."
   (-initialize [this opts])
   (-refresh [this opts]))
 
@@ -144,10 +152,6 @@
          "var ns, ns_string, path, key, state_path_parts, on_state_path, skip_keys;\n"
          "ns_string = \"" ns "\";\n"
          "skip_keys = " skip-keys ";\n"
-         "path = goog.dependencies_.nameToPath[ns_string];\n"
-         "goog.object.remove(goog.dependencies_.visited, path);\n"
-         "goog.object.remove(goog.dependencies_.written, path);\n"
-         "goog.object.remove(goog.dependencies_.written, goog.basePath + path);\n"
          "if (" (object-path-exists? ns) ") {\n"
          "  ns = " ns ";\n"
          "  for (key in ns) {\n"
@@ -242,6 +246,22 @@
                                                              disable-load)))
       (update-in [::track/load] (partial remove disable-load))))
 
+(defn html-async-init-error? [ex-i]
+  (let [{{:keys [value] :as e} :error} (ex-data ex-i)]
+    ;; chrome
+    ;;  "TypeError: Cannot read property 'loadMany' of undefined"
+    ;; firefox
+    ;;  "TypeError: goog.net.jsloader is undefined"
+    ;; safari
+    ;;  "TypeError: undefined is not an object (evaluating 'goog.net.jsloader.loadMany')"
+    ;; ie11
+    ;;  "TypeError: Unable to get property 'loadMany' of undefined or null reference"
+    ;; ie10
+    ;;  "TypeError: Unable to get property 'loadMany' of undefined or null reference"
+    (and (str/includes? value "TypeError")
+         (or (str/includes? value "loadMany")
+             (str/includes? value "goog.net.jsloader")))))
+
 (defrecord HtmlAsyncRefresher []
   IRefresh
   (-initialize [this {:keys [repl-env analyzer-env repl-opts]}]
@@ -257,16 +277,36 @@
                           state
                           all-nss
                           unload-nss
-                          load-nss]}]
-    (eval-script repl-env
-                 (str "(function() {\n"
-                      (call-sym-script before)
-                      (unload-nss-script state all-nss unload-nss)
-                      "var d = " (load-nss-html-async build-opts compiler-env load-nss) ";\n"
-                      "d.addCallback(function(ret) {\n"
-                      (call-sym-script after)
-                      "  });\n"
-                      "})();"))))
+                          load-nss] :as opts}]
+    (try
+      ;; piggieback "helpfully" prints every error it encounters to the
+      ;; repl for you. We don't want that if we're going to commit to handling
+      ;; some errors automatically.
+      (binding [*err* (io/writer (ByteStreams/nullOutputStream))]
+        (eval-script repl-env
+                     (str "(function() {\n"
+                          (call-sym-script before)
+                          (unload-nss-script state all-nss unload-nss)
+                          "var d = " (load-nss-html-async build-opts compiler-env load-nss) ";\n"
+                          "d.addCallback(function(ret) {\n"
+                          (call-sym-script after)
+                          "  });\n"
+                          "})();")))
+      (catch ExceptionInfo ei
+        (if (html-async-init-error? ei)
+          (do (prn :re-initializing)
+              (-initialize this opts)
+              (eval-script repl-env
+                           (str "(function() {\n"
+                                ;; Don't call :before. If we're in this situation
+                                ;; we know we've already called it and unloaded it.
+                                ;; Don't call unload because it should already be done.
+                                "var d = " (load-nss-html-async build-opts compiler-env load-nss) ";\n"
+                                "d.addCallback(function(ret) {\n"
+                                (call-sym-script after)
+                                "  });\n"
+                                "})();")))
+          (throw ei))))))
 
 (defrecord SyncRefresher []
   IRefresh
@@ -329,7 +369,7 @@
     (when (= macro-reload-status :ok)
       ;; There is already a function for this: cljs.closure/mark-cljs-ns-for-recompile!
       ;; However it sets last modified to 5000, and tools.namespace filters on
-      ;; last modified > last checked (clojure.tools.namespace.dir/modified-files.
+      ;; last modified > last checked (clojure.tools.namespace.dir/modified-files).
       ;; cljs seems to only care if last modified output != last modified input
       ;; (cljs.util/changed?). So this ought to do.
       (doseq [dep (closure/cljs-dependents-for-macro-namespaces compiler-env
@@ -521,7 +561,7 @@
 
    Returns a map of the following fns for use in the cljs repl.
 
-   'refresh - refreshes :source-dirs.
+   'refresh - Refreshes :source-dirs.
               Any passed args will override the values passed to `special-fns`.
    'clear   - Clear the tracker state.
    'start-watch - Start a watcher* that will automatically call refresh when any
@@ -616,15 +656,6 @@
 
      'stop-watch (wrap (fn [_ _ _ _]
                          (stop-watch)))
-
-     ;; manual init in case the page gets reloaded and you have a
-     ;; resillient repl env
-     'init (fn [repl-env analyzer-env _ repl-opts]
-             (init {:repl-opts repl-opts
-                    :repl-env repl-env
-                    :analyzer-env analyzer-env
-                    :refresher refresher})
-             (reset! initialized? true))
 
      'print-disabled
      (wrap (fn [& _]
