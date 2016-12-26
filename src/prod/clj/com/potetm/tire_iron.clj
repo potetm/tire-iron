@@ -231,10 +231,6 @@
          (add-deps opts compiler-env nss)
          "var nss = " nss-array ";\n"
          "var nss_paths = " nss-paths ";\n"
-         ;; cleanupWhenDone: true appears to cleanup from the head in chrome.
-         ;; Doesn't appear to clean up from the body. (I'm not sure why it adds a script tag to both.)
-         ;; I'll leave this for now, but I might have to swing back through and
-         ;; find a way to clean up scritp tags from the body.
          "return goog.net.jsloader.loadMany(nss_paths, {cleanupWhenDone: true}).addCallback(function() {\n"
          "  " loaded-libs " = cljs.core.apply.call(null, cljs.core.conj, " loaded-libs " || cljs.core.PersistentHashSet.EMPTY, nss);\n"
          "  });\n"

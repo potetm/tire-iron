@@ -94,3 +94,50 @@ that code and just use `jsloader`. I'm not sure what that might break, but the u
   * I don't mess with the current `goog.require`, meaning everything that did work still does
 
 Assuming that doesn't fundamentally break something, this seems like the best option.
+
+---
+
+What goog.require appears to do:
+  1. Create a dependency-ordered list of scripts that need to be loaded
+    * It skips dependencies that have already been loaded by checking
+      * `goog.dependencies_.visited`
+      * `goog.dependencies_.written`
+    * During this, it marks the fact that dependencies are slated for loading
+      in `goog.dependencies_.visited`
+  2. Marks all of the the dependencies as loading in `goog.dependencies_.written`
+  3. Writes all of the script tags
+    * During this it re-marks the dependencies as loading in `goog.dependencies_.written`
+      But this time it prepends `goog.basePath` to the load path.
+
+So basically, it writes the script tags, but caches information along the way.
+
+I would be a little wary of taking advantage of these implementation details, but
+the browser repl already tweaks the following:
+  * `goog.dependencies_.visited` - clears the cache
+  * `goog.dependencies_.written` - clears the cache
+  * `goog.require` - monkey patches to clear the above caches
+  * `goog.writeScriptTag_`
+     * This is the fn that writes the tag to the document. It's not meant to be
+       monkey patched, but closure does provide an official path to override it:
+       `goog.global.CLOSURE_IMPORT_SCRIPT`
+
+So ClojureScript is already taking advantage of a lot of implementation details.
+
+My solution is actually ignoring all of those details. The only assumption I'm making
+is that by managing dependency ordering and script tag writing myself, I won't be
+breaking anything. Given the way it works, the worst case is that you would get a
+duplicate load when a new dependency goes through `goog.require`, because I didn't
+write it to `goog.dependencies_.visited` and `goog.dependencies_.written`. Even
+then, I'm having trouble coming up with a scenario where that's a particular problem.
+If you get in a weird state because during the loading process you re-compile a
+file that's getting a duplicate load, the subsequent refresh will fix it. (Assuming
+that you're compiling via `refresh`. tire-iron is not designed to run with
+the built-in cljs watcher running.)
+
+The alternative to all of this is to basically re-implement what figwheel does.
+Override `goog.global.CLOSURE_IMPORT_SCRIPT` to put to a queue I can manage and
+create hooks for. That seems like a lot of additional complexity with the only
+discernible benefit being that Closure was designed to run that way.
+
+Unless I discover that going that route provides something more than caching,
+dependency ordering, and script-writing, I'm going to stick with what I have.
