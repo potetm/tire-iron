@@ -7,6 +7,8 @@
 ;; during unloading, you need to make sure it's not reset during ns loading.
 (defonce state {:repl-conn (repl/connect "http://localhost:9000/repl")})
 
+(m/foo-tha-foo)
+
 (defn before []
   (println "before"))
 

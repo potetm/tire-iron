@@ -5,8 +5,9 @@
 
 (defonce state {:repl-conn (repl/connect "ws://localhost:9001")})
 
+(m/foo-tha-foo)
+
 (defn before []
-  (m/foo-tha-foo)
   (println "before"))
 
 (defn after []

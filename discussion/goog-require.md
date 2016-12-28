@@ -141,3 +141,69 @@ discernible benefit being that Closure was designed to run that way.
 
 Unless I discover that going that route provides something more than caching,
 dependency ordering, and script-writing, I'm going to stick with what I have.
+
+---
+
+Okay. One more wrinkle in this never-ending saga: non-browser repls.
+
+First some background on why browser loading is different from non-browser repls.
+
+The browser refresh process is inherently asynchronous. We can quasi get around this
+by writing script tags for js loading. Closure conveniently provides `goog.net.jsloader`
+for exactly this purpose. Trouble is, though this makes the loading process sequential,
+overall flow is still asynchronous, so we use callbacks to trigger `:after`.
+
+If you're thinking "Well `goog.require` loads via script tags," you would be correct.
+The problem is, `goog.require` 1) doesn't provide any callbacks, and 2) doesn't
+clean up after itself. I want to support prolonged repl sessions, so DOM cleanup
+is mandatory.
+
+This all works fine. So why not always use `goog.net.jsloader`? Because, dear reader,
+not all JS environments have a document to write script tags to.
+
+Bottom line: we must load via script tags in the browser, but we can't load via
+script tags in other envs.
+
+So we have two different loading strategies: dom-async and sync.
+
+Back to the problem at hand.
+
+As outlined above, we don't want to mess with `goog.require`'s caching schemes in
+DOM-land, because we're operating entirely outside of `goog.require`.
+
+The question is: Do we want to mess w/ Closures' dep cache in non-DOM land?
+
+Turns out, as things stand, we actually *can* skip clearing `goog.dependencies_.visited`
+and `goog.dependencies_.written`. node, rhino, and nashorn repl-envs all monkey-patch
+`goog.require` and skip `goog.dependencies_` checks.
+
+So the only thing I'm puzzled about now is why the browser repl goes through
+`goog.require` and the other repls don't. Probably because the browser repl needs
+to load in dependency order, and the other repls load scripts synchronously, so
+everything gets loaded in the right order automatically.
+
+The question is: Do we want to make the assumption that synchronous environments
+will never rely on `goog.dependencies_` information to decide on re-loads?
+
+Part of me would prefer to not assume _anything_ about loading beyond what
+ClojureScript itself provides. Namely:
+  * Namespaces exist as nested JS objects, with "vars" stored as keys in the namespace
+    * Obviously this is accomplished via Closure, but I consider that an implementation detail
+  * Loaded lib names are cached as Closure dep strings in `cljs.core/*loaded-libs*`
+    * https://github.com/clojure/clojurescript/wiki/Custom-REPLs#eliminating-loaded-libs-tracking
+
+My decision for the time being: Because ns reloading is already explicitly built
+into the REPLs, take advantage of that where it works, and use the provided cljs API.
+
+---
+
+This phrase from the [REPL manifesto](https://github.com/clojure/clojurescript/wiki/Custom-REPLs/3d4d0d3cb9984af382e67f0109d132e5d50fd6bb#expectations)
+concerns me about the DOM-reloading strategy:
+> While it is OK to stream compiled forms the user has entered this should be avoided
+> at all costs for loading namespaces - REPLs should rely on the target environment
+> to interpret goog.require. This has many benefits including precise source mapping
+> information.
+
+I've tested it, and source mapping seems to work fine. I had to add a cache busting
+scheme to make it update in Chrome, but that appears to be [a Chrome bug](https://bugs.chromium.org/p/chromium/issues/detail?id=438251).
+More on this in [source-maps](./source-maps.md).

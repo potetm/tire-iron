@@ -209,7 +209,13 @@
   (str (add-deps opts compiler-env nss)
        "\n"
        (str/join "\n"
-                 (map (comp #(str "goog.require('" % "');")
+                 ;; it's not clear to me what the API of the repl monkey-patched
+                 ;; goog.require is. It takes a second arg named "reload", and
+                 ;; the browser repl checks if (= reload "reload-all"). Other repls
+                 ;; only check truthiness. So my assumption is that it has the same
+                 ;; semantics as clojure.core/require, but with strings for easy
+                 ;; use from JS.
+                 (map (comp #(str "goog.require('" % "', 'reload');")
                             comp/munge)
                       nss))))
 
@@ -258,7 +264,7 @@
          (or (str/includes? value "loadMany")
              (str/includes? value "goog.net.jsloader")))))
 
-(defrecord HtmlAsyncRefresher []
+(defrecord DomAsyncRefresher []
   IRefresh
   (-initialize [this {:keys [repl-env analyzer-env repl-opts]}]
     (require-lib repl-env
@@ -515,7 +521,7 @@
   (if (= "true"
          (eval-script repl-env
                       "!!goog.global.document"))
-    (->HtmlAsyncRefresher)
+    (->DomAsyncRefresher)
     (->SyncRefresher)))
 
 (defn init [{:keys [repl-opts

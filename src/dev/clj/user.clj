@@ -97,6 +97,7 @@
                 :output-dir "target/public/js"
                 :asset-path "js"
                 :source-map true
+                :source-map-timestamp true
                 :optimizations :none
                 :pretty-print true
                 :verbose false
@@ -113,6 +114,7 @@
                 :output-dir "target/public/js"
                 :asset-path "js"
                 :source-map true
+                :source-map-timestamp true
                 :optimizations :none
                 :pretty-print true
                 :verbose false
@@ -148,3 +150,9 @@
   (copy-index-to-target)
   (browser-build)
   (browser-nrepl))
+
+(defn fresh-weasel-repl []
+  (clean)
+  (copy-index-to-target)
+  (weasel-build)
+  (weasel-nrepl))
