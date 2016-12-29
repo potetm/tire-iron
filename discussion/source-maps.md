@@ -68,7 +68,7 @@ Such is life.
 
 ---
 
-Omg. I forgot that piggieback wraps repl envs. So I can't reliabley check for BrowserEnv
+Omg. I forgot that piggieback wraps repl envs. So I can't reliably check for BrowserEnv
 directly. I also can't test just for piggieback delegating repls either, because
 they're dynamically generated and could be in any namespace. In addition, they are
 types, not records, so in order to test if the nested env is a BrowserEnv, I would
@@ -79,6 +79,26 @@ I could try/catch the null pointer.
 This is turning into hacks upon hacks.
 
 ---
+
+Okay. I'm going to commit to providing this whenever their repl env supports it.
+
+I'll add some steps to initialization to determine if we can cache-bust and install
+a buster if we can.
+
+The cost of this is a touch of complexity and a few more network calls on initialization.
+It'll add some goog dependencies to the JS env, but I'm not at all opposed to that.
+
+The upside is it will accurately detect whether their system will support cache-busting.
+So when/if this the browser repl is fixed, users' repls will suddenly support source
+maps with no other work required. Another upside is that this has absolutely no
+effect on our ability to refresh code. This is a nice-to-have feature that can
+be easily discarded if their system doesn't support it.
+
+The reason we have to install a cache-buster in the JS environment is:
+  * We _cannot_ know for sure if we can cache bust unless we try it
+  * Because the browser is async, we can't just try to download, wait for a response,
+    and store some state server-side. We would have to come up with some rendezvous
+    scheme, which would invariably break eventually.
 
 ### TODO
 File a bug to allow browser-env to serve timestamped mappings files.

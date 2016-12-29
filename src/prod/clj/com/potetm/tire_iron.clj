@@ -76,8 +76,8 @@
                    (throw e))
       :success value)))
 
-(defn require-lib [repl-env analyze-env repl-opts target-ns]
-  (let [is-self-require? (= target-ns ana/*cljs-ns*)
+(defn require-libs [repl-env analyze-env repl-opts target-nss]
+  (let [is-self-require? (some #{ana/*cljs-ns*} target-nss)
         [in-ns restore-ns]
         (if is-self-require?
           ['cljs.user ana/*cljs-ns*]
@@ -87,7 +87,7 @@
                  analyze-env
                  repl-opts
                  `(~'ns ~in-ns
-                    (:require [~target-ns]))))
+                    (:require ~@target-nss))))
     (when is-self-require?
       (set! ana/*cljs-ns* restore-ns))))
 
@@ -219,7 +219,7 @@
                             comp/munge)
                       nss))))
 
-(defn load-nss-html-async [opts compiler-env nss]
+(defn load-nss-html-async [build-opts compiler-env nss]
   (let [loaded-libs (comp/munge 'cljs.core/*loaded-libs*)
         nss-array (str "["
                        (str/join ",\n"
@@ -229,12 +229,12 @@
                        "]")
         nss-paths (str "["
                        (str/join ",\n"
-                                 (map (comp #(str "goog.basePath + goog.dependencies_.nameToPath[\"" % "\"]")
-                                            comp/munge)
+                                 (map (fn [n]
+                                        (str "goog.tire_iron_name_to_path__('" (comp/munge n) "')"))
                                       nss))
                        "]")]
     (str "(function() {\n"
-         (add-deps opts compiler-env nss)
+         (add-deps build-opts compiler-env nss)
          "var nss = " nss-array ";\n"
          "var nss_paths = " nss-paths ";\n"
          "return goog.net.jsloader.loadMany(nss_paths, {cleanupWhenDone: true}).addCallback(function() {\n"
@@ -260,17 +260,44 @@
     ;;  "TypeError: Unable to get property 'loadMany' of undefined or null reference"
     ;; ie10
     ;;  "TypeError: Unable to get property 'loadMany' of undefined or null reference"
-    (and (str/includes? value "TypeError")
-         (or (str/includes? value "loadMany")
-             (str/includes? value "goog.net.jsloader")))))
+    (or (and (str/includes? value "TypeError")
+             (or (str/includes? value "loadMany")
+                 (str/includes? value "goog.net.jsloader")))
+        (and (str/includes? value "TypeError")
+             (str/includes? value "tire_iron_name_to_path__")))))
 
 (defrecord DomAsyncRefresher []
   IRefresh
   (-initialize [this {:keys [repl-env analyzer-env repl-opts]}]
-    (require-lib repl-env
-                 analyzer-env
-                 repl-opts
-                 'goog.net.jsloader))
+    (require-libs repl-env
+                  analyzer-env
+                  repl-opts
+                  '[goog.net.jsloader
+                    goog.Uri
+                    goog.object])
+    (eval-form repl-env
+               analyzer-env
+               repl-opts
+               '(do (set! js/goog.tire_iron_name_to_path__
+                          (fn [n]
+                            (.makeUnique (js/goog.Uri.parse (str js/goog.basePath
+                                                                 (js/goog.object.get js/goog.dependencies_.nameToPath
+                                                                                     n))))))
+                    (let [path (js/goog.tire_iron_name_to_path__ "goog.object")]
+                      (doto (js/goog.net.jsloader.load path
+                                                       (clj->js {"cleanupWhenDone" true}))
+                        (.addCallback (fn []
+                                        (comment (js/console.log "cache busting supported!"))))
+                        (.addErrback (fn []
+                                       (js/console.debug "The failed network call to" (.toString path) "was a test to see if your system supports source map reloading.")
+                                       (js/console.debug "Unfortunately, your system does not support this feature.")
+                                       (js/console.debug "This is a known issue with cljs.repl.browser/repl-env.")
+                                       (js/console.debug "This will not affect your ability to use any other feature of tire-iron.")
+                                       (set! js/goog.tire_iron_name_to_path__
+                                             (fn [n]
+                                               (str js/goog.basePath
+                                                    (js/goog.object.get js/goog.dependencies_.nameToPath
+                                                                        n)))))))))))
   (-refresh [this {:keys [repl-env
                           build-opts
                           compiler-env
@@ -358,6 +385,15 @@
               {::macro-reload-status :error
                ::error result}))))))
 
+;; copied from cljs.closure for backward compatibility
+(defn cljs-dependents-for-macro-namespaces
+  [state namespaces]
+  (map :name
+       (let [namespaces-set (set namespaces)]
+         (filter (fn [x] (not-empty
+                           (set/intersection namespaces-set (-> x :require-macros vals set))))
+                 (vals (:cljs.analyzer/namespaces @state))))))
+
 (defn refresh-macros-and-mark-dependents
   "This could be done via tools.namespace, but the compiler needs to be notified
   that these namespaces need to be re-compiled.
@@ -374,8 +410,8 @@
       ;; last modified > last checked (clojure.tools.namespace.dir/modified-files).
       ;; cljs seems to only care if last modified output != last modified input
       ;; (cljs.util/changed?). So this ought to do.
-      (doseq [dep (closure/cljs-dependents-for-macro-namespaces compiler-env
-                                                                affected-namespaces)]
+      (doseq [dep (cljs-dependents-for-macro-namespaces compiler-env
+                                                        affected-namespaces)]
         ;; The cljs version also uses `target-file-for-cljs-ns`, which seems like a
         ;; hack. The source transitively changed, not output file. Not sure what
         ;; the reasoning was there. Either way, tools.namespace needs the source
@@ -623,38 +659,39 @@
                                 closed-settings
                                 (select-overridable-keys passed-settings))))))
 
-     'start-watch (wrap (fn [repl-env analyzer-env [_ & opts] repl-opts]
-                          (if (and watch-exec (not (.isShutdown watch-exec)))
-                            (binding [*out* *err*]
-                              (println "Watch already running. Did you mean to (stop-watch) first?"))
-                            (let [passed-settings (apply hash-map opts)
-                                  exec (Executors/newSingleThreadExecutor
-                                         (reify ThreadFactory
-                                           (newThread [this runnable]
-                                             (doto (Thread. runnable
-                                                            "tire-iron-watcher-thread")
-                                               (.setDaemon true)))))]
-                              (alter-var-root #'watch-exec (constantly exec))
-                              (when-not @initialized?
-                                (init {:repl-opts repl-opts
-                                       :repl-env repl-env
-                                       :analyzer-env analyzer-env
-                                       :refresher refresher})
-                                (reset! initialized? true))
-                              (start-watch watch-exec
-                                           (FileSystems/getDefault)
-                                           (merge {:refresher @refresher
-                                                   :tracker tracker
-                                                   :source-dirs source-dirs
-                                                   :disable-unload @disable-unload
-                                                   :disable-load @disable-load
-                                                   :repl-env repl-env
-                                                   :analyzer-env analyzer-env
-                                                   :repl-opts repl-opts
-                                                   :compiler-env env/*compiler*
-                                                   :original-ns *ns*}
-                                                  closed-settings
-                                                  (select-overridable-keys passed-settings)))))))
+     'start-watch
+     (wrap (fn [repl-env analyzer-env [_ & opts] repl-opts]
+             (if (and watch-exec (not (.isShutdown watch-exec)))
+               (binding [*out* *err*]
+                 (println "Watch already running. Did you mean to (stop-watch) first?"))
+               (let [passed-settings (apply hash-map opts)
+                     exec (Executors/newSingleThreadExecutor
+                            (reify ThreadFactory
+                              (newThread [this runnable]
+                                (doto (Thread. runnable
+                                               "tire-iron-watcher-thread")
+                                  (.setDaemon true)))))]
+                 (alter-var-root #'watch-exec (constantly exec))
+                 (when-not @initialized?
+                   (init {:repl-opts repl-opts
+                          :repl-env repl-env
+                          :analyzer-env analyzer-env
+                          :refresher refresher})
+                   (reset! initialized? true))
+                 (start-watch watch-exec
+                              (FileSystems/getDefault)
+                              (merge {:refresher @refresher
+                                      :tracker tracker
+                                      :source-dirs source-dirs
+                                      :disable-unload @disable-unload
+                                      :disable-load @disable-load
+                                      :repl-env repl-env
+                                      :analyzer-env analyzer-env
+                                      :repl-opts repl-opts
+                                      :compiler-env env/*compiler*
+                                      :original-ns *ns*}
+                                     closed-settings
+                                     (select-overridable-keys passed-settings)))))))
 
      'stop-watch (wrap (fn [_ _ _ _]
                          (stop-watch)))

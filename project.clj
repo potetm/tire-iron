@@ -4,13 +4,13 @@
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
 
-  :dependencies [[org.clojure/clojure "1.8.0"]
-                 [org.clojure/clojurescript "1.9.293"]
-                 [org.clojure/tools.namespace "0.3.0-alpha3"]]
+  :dependencies [[org.clojure/tools.namespace "0.3.0-alpha3"]]
 
   :source-paths ["src/prod/clj"]
   :resource-paths ["resources/prod"]
-  :profiles {:dev {:source-paths ["src/dev/clj"]
+  :profiles {:provided {:dependencies [[org.clojure/clojure "1.8.0"]
+                                       [org.clojure/clojurescript "1.9.293"]]}
+             :dev {:source-paths ["src/dev/clj"]
                    :resource-paths ["resources/dev"]}
              :cljs-repl [:dev
                          {:source-paths ["src/dev/browser"
