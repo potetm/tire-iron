@@ -237,7 +237,7 @@
          (add-deps build-opts compiler-env nss)
          "var nss = " nss-array ";\n"
          "var nss_paths = " nss-paths ";\n"
-         "return goog.net.jsloader.loadMany(nss_paths, {cleanupWhenDone: true}).addCallback(function() {\n"
+         "return goog.tire_iron_loadMany__(nss_paths, {cleanupWhenDone: true}).addCallback(function() {\n"
          "  " loaded-libs " = cljs.core.apply.call(null, cljs.core.conj, " loaded-libs " || cljs.core.PersistentHashSet.EMPTY, nss);\n"
          "  });\n"
          "})();")))
@@ -262,9 +262,10 @@
     ;;  "TypeError: Unable to get property 'loadMany' of undefined or null reference"
     (or (and (str/includes? value "TypeError")
              (or (str/includes? value "loadMany")
-                 (str/includes? value "goog.net.jsloader")))
-        (and (str/includes? value "TypeError")
-             (str/includes? value "tire_iron_name_to_path__")))))
+                 (str/includes? value "goog.net.jsloader")
+                 (str/includes? value "tire_iron_name_to_path__")
+                 (str/includes? value "tire_iron_scriptLoadingDeferred_")
+                 (str/includes? value "tire_iron_loadMany__"))))))
 
 (defrecord DomAsyncRefresher []
   IRefresh
@@ -275,6 +276,34 @@
                   '[goog.net.jsloader
                     goog.Uri
                     goog.object])
+    ;; Older versions of cljs include a closure-library that has a version of loadMany
+    ;; that doesn't return a deferred. Copy the version we want here for backward
+    ;; compatibility.
+    (eval-script repl-env
+                 (str "goog.tire_iron_scriptLoadingDeferred_;\n"
+                      "goog.tire_iron_loadMany__ = function(uris, opt_options) {\n"
+                      "  if (!uris.length) {\n"
+                      "    return goog.async.Deferred.succeed(null);\n"
+                      "  }\n"
+                      "\n"
+                      "  var isAnotherModuleLoading = goog.net.jsloader.scriptsToLoad_.length;\n"
+                      "  goog.array.extend(goog.net.jsloader.scriptsToLoad_, uris);\n"
+                      "  if (isAnotherModuleLoading) {\n"
+                      "    return goog.tire_iron_scriptLoadingDeferred_;\n"
+                      "  }\n"
+                      "\n"
+                      "  uris = goog.net.jsloader.scriptsToLoad_;\n"
+                      "  var popAndLoadNextScript = function() {\n"
+                      "    var uri = uris.shift();\n"
+                      "    var deferred = goog.net.jsloader.load(uri, opt_options);\n"
+                      "    if (uris.length) {\n"
+                      "      deferred.addBoth(popAndLoadNextScript);\n"
+                      "    }\n"
+                      "    return deferred;\n"
+                      "  };\n"
+                      "  goog.tire_iron_scriptLoadingDeferred_ = popAndLoadNextScript();\n"
+                      "  return goog.tire_iron_scriptLoadingDeferred_;\n"
+                      "};\n"))
     (eval-form repl-env
                analyzer-env
                repl-opts
