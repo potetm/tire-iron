@@ -622,9 +622,12 @@
    the state var if you're using a browser repl!
 
    Refresh happens in the following order:
-     1. :before is called
-     2. refresh happens
-     3. :after is called
+     1. Clojure build environment is refreshed (via `clojure.tools.namespace.repl/refresh`)
+     2. ClojureScript files are re-compiled
+     3. :before is called
+     4. Vars are removed (the `:state` symbol is left untouched)
+     5. Namespaces are re-loaded
+     6. :after is called
 
    Returns a map of the following fns for use in the cljs repl.
 
