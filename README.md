@@ -1,4 +1,4 @@
-# tire-iron
+# Tire-iron
 Bringing the Reloaded Workflow to ClojureScript
 
 ## Goals
