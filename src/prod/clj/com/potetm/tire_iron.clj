@@ -13,7 +13,8 @@
             [cljs.closure :as closure]
             [cljs.compiler :as comp]
             [cljs.env :as env]
-            [cljs.repl :as repl])
+            [cljs.repl :as repl]
+            [cljs.util :as util])
   (:import (clojure.lang ExceptionInfo)
            (com.google.common.io ByteStreams)
            (com.sun.nio.file SensitivityWatchEventModifier)
@@ -28,7 +29,8 @@
                           WatchEvent
                           WatchEvent$Kind
                           WatchEvent$Modifier)
-           (java.io IOException)
+           (java.io File
+                    IOException)
            (java.util.concurrent Executors
                                  ExecutorService
                                  ThreadFactory
@@ -172,38 +174,24 @@
                                                [k])))
                  nss)))
 
-;; These js-file and deps fns rely on quite a few non-API calls.
-;; They'll be pretty brittle in the face of change :/
-;; That said, I've no reason to believe these calls change a whole lot.
-(defn js-file->assumed-compiled [output-dir js-file]
-  (let [f (io/file (closure/rel-output-path js-file))]
-    (assoc js-file
-      :url (.toURI
-             (if (.isAbsolute f)
-               f
-               (.getAbsoluteFile (io/file output-dir
-                                          f)))))))
+;; copied from closure/target-file-for-cljs-ns for backward compatibility
+(defn ^File target-file-for-cljs-ns
+  [ns-sym output-dir]
+  (util/to-target-file
+    (util/output-directory {:output-dir output-dir})
+    {:ns ns-sym}))
 
-(defn deps-as-js-files [opts compiler-env ns]
-  (remove (comp #{:seed}
-                :type)
-          (closure/add-dependencies opts
-                                    {:requires [(name ns)]
-                                     :type :seed
-                                     :uri (:uri (closure/source-for-namespace ns
-                                                                              compiler-env))})))
-
+;; Must add deps because a new namespace needs to be added to the goog dependency
+;; tree. Otherwise, you get an error when the new namespace is required anywhere.
 (defn add-deps [{:keys [output-dir] :as opts}
                 compiler-env
                 nss]
-  ;; lol. clojure/cljs-dependencies (called by clojure/add-dependencies) blindly
-  ;; does a deref on env/*compiler* and invokes it. Crazytown.
   (binding [env/*compiler* compiler-env]
     (apply str
-           (map (comp (partial closure/add-dep-string opts)
-                      (partial js-file->assumed-compiled output-dir))
-                (distinct (mapcat (partial deps-as-js-files opts compiler-env)
-                                  nss))))))
+           (map #(closure/add-dep-string opts (closure/compiled-file
+                                                {:file (target-file-for-cljs-ns %
+                                                                                output-dir)}))
+                nss))))
 
 (defn load-nss-sync [opts compiler-env nss]
   (str (add-deps opts compiler-env nss)
@@ -215,6 +203,8 @@
                  ;; only check truthiness. So my assumption is that it has the same
                  ;; semantics as clojure.core/require, but with strings for easy
                  ;; use from JS.
+                 ;;
+                 ;; cljs.compiler/load-libs confirms this assessment
                  (map (comp #(str "goog.require('" % "', 'reload');")
                             comp/munge)
                       nss))))
@@ -242,11 +232,13 @@
          "  });\n"
          "})();")))
 
-(defn remove-disabled [tracker disable-unload disable-load]
-  (-> tracker
-      (update-in [::track/unload] (partial remove (set/union disable-unload
-                                                             disable-load)))
-      (update-in [::track/load] (partial remove disable-load))))
+;; copied from cljs.repl/env->opts
+(defn repl-env->build-opts [repl-opts repl-env]
+  (merge (into {} repl-env)
+         {:optimizations (:optimizations repl-env :none)
+          :output-dir (:working-dir repl-env ".repl")}
+         repl-opts))
+
 
 (defn html-async-init-error? [ex-i]
   (let [{{:keys [value] :as e} :error} (ex-data ex-i)]
@@ -260,12 +252,13 @@
     ;;  "TypeError: Unable to get property 'loadMany' of undefined or null reference"
     ;; ie10
     ;;  "TypeError: Unable to get property 'loadMany' of undefined or null reference"
-    (or (and (str/includes? value "TypeError")
-             (or (str/includes? value "loadMany")
-                 (str/includes? value "goog.net.jsloader")
-                 (str/includes? value "tire_iron_name_to_path__")
-                 (str/includes? value "tire_iron_scriptLoadingDeferred_")
-                 (str/includes? value "tire_iron_loadMany__"))))))
+    (when value
+      (or (and (str/includes? value "TypeError")
+               (or (str/includes? value "loadMany")
+                   (str/includes? value "goog.net.jsloader")
+                   (str/includes? value "tire_iron_name_to_path__")
+                   (str/includes? value "tire_iron_scriptLoadingDeferred_")
+                   (str/includes? value "tire_iron_loadMany__")))))))
 
 (defrecord DomAsyncRefresher []
   IRefresh
@@ -384,13 +377,6 @@
                       (load-nss-sync build-opts compiler-env load-nss)
                       (call-sym-script after)))))
 
-;; copied from cljs.repl/env->opts
-(defn repl-env->build-opts [repl-opts repl-env]
-  (merge (into {} repl-env)
-         {:optimizations (:optimizations repl-env :none)
-          :output-dir (:working-dir repl-env ".repl")}
-         repl-opts))
-
 ;; Copied from clojure.tools.namespace/repl. This is definitionally
 ;; the same, but I need to get the affected namespaces.
 (defn do-refresh-macros [current-ns]
@@ -449,6 +435,12 @@
           (when (.exists f)
             (.setLastModified f (System/currentTimeMillis))))))
     result))
+
+(defn remove-disabled [tracker disable-unload disable-load]
+  (-> tracker
+      (update-in [::track/unload] (partial remove (set/union disable-unload
+                                                             disable-load)))
+      (update-in [::track/load] (partial remove disable-load))))
 
 (defn refresh* [{:keys [refresher
                         tracker
