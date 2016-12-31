@@ -27,8 +27,8 @@ your ClojureScript REPL like so:
 
 ```clj
 (ns my-repl
-  (:require [cljs.REPL :as REPL]
-            [cljs.REPL.browser :as browser]
+  (:require [cljs.repl :as repl]
+            [cljs.repl.browser :as browser]
             [com.potetm.tire-iron :as ti]))
 
 (repl/repl (browser/REPL-env)
