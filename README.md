@@ -1,4 +1,4 @@
-# tire-iron
+# Tire-iron
 Bringing the Reloaded Workflow to ClojureScript
 
 ## Goals
@@ -11,7 +11,7 @@ Bringing the Reloaded Workflow to ClojureScript
 7. Permit automatic reloading on file change
 
 ## Installation
-```
+```clj
 [com.potetm/tire-iron "0.2.0"]
 ```
 
@@ -27,8 +27,8 @@ your ClojureScript REPL like so:
 
 ```clj
 (ns my-repl
-  (:require [cljs.REPL :as REPL]
-            [cljs.REPL.browser :as browser]
+  (:require [cljs.repl :as repl]
+            [cljs.repl.browser :as browser]
             [com.potetm.tire-iron :as ti]))
 
 (repl/repl (browser/REPL-env)
@@ -61,6 +61,7 @@ Watcher Refreshing...
 ### A note about browser REPLs
 Having multiple browser REPL connections will render your system unusable.
 To prevent this you should always:
+
 1. Put your REPL connection in your `:state` var. This preserves it during namespace unloading.
 2. Use `defonce` for your `:state` var. This preserves it during namespace loading.
 
@@ -80,7 +81,8 @@ To prevent this you should always:
 `:add-all?`, `:before`, `:after`, and `:state` can be overridden in the REPL by supplying them
 to `refresh` or `start-watch`. This can be used in a variety of ways. For example:
   * Starting an application from a Node REPL: `(refresh :before nil)`
-  * Dropping all current state (don't do this if your REPL connection is in your state var): `(refresh :state nil :add-all? true)`
+  * Dropping all current state: `(refresh :state nil :add-all? true)`
+    * Don't do this if your REPL connection is in your state var
   * Trying to recover from a bad environment state: `(refresh :before nil :after nil :add-all? true)`
 
 Because `:special-fns` are just symbols that are handled specially by the REPL,
@@ -116,8 +118,8 @@ REPL session, you can call the only other tire-iron API call at any time: `com.p
 Something you might not anticipate is the refreshing of your CLJ REPL namespaces during
 tire-iron `refresh`. This is required in order to get macro refreshing. To avoid
 issues with this, you should keep your _ClojureScript build environment_ separate from
-any other environment you might have (e.g. server environment). Tire-iron is intended
-to be used with the context of your _ClojureScript build environment_.
+any other environment you might have (e.g. server environment). **Tire-iron is intended
+to be used within the context of your _ClojureScript build environment_.**
 
 ## Comparison with [Figwheel](https://github.com/bhauman/lein-figwheel)
 ### Project Goals
