@@ -242,6 +242,9 @@
 
 (defn html-async-init-error? [ex-i]
   (let [{{:keys [value] :as e} :error} (ex-data ex-i)]
+    ;; I tested this when I used "goog.net.jsloader.loadMany". These
+    ;; errors are still fairly useful for posterity methinks.
+
     ;; chrome
     ;;  "TypeError: Cannot read property 'loadMany' of undefined"
     ;; firefox
@@ -253,12 +256,10 @@
     ;; ie10
     ;;  "TypeError: Unable to get property 'loadMany' of undefined or null reference"
     (when value
-      (or (and (str/includes? value "TypeError")
-               (or (str/includes? value "loadMany")
-                   (str/includes? value "goog.net.jsloader")
-                   (str/includes? value "tire_iron_name_to_path__")
-                   (str/includes? value "tire_iron_scriptLoadingDeferred_")
-                   (str/includes? value "tire_iron_loadMany__")))))))
+      (and (str/includes? value "TypeError")
+           (or (str/includes? value "tire_iron_name_to_path__")
+               (str/includes? value "tire_iron_scriptLoadingDeferred_")
+               (str/includes? value "tire_iron_loadMany__"))))))
 
 (defrecord DomAsyncRefresher []
   IRefresh
@@ -345,7 +346,7 @@
                           "})();")))
       (catch ExceptionInfo ei
         (if (html-async-init-error? ei)
-          (do (prn :re-initializing)
+          (do (comment (prn :re-initializing))
               (-initialize this opts)
               (eval-script repl-env
                            (str "(function() {\n"
