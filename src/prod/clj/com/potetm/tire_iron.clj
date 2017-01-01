@@ -380,25 +380,28 @@
 ;; Copied from clojure.tools.namespace/repl. This is definitionally
 ;; the same, but I need to get the affected namespaces.
 (defn do-refresh-macros [current-ns]
-  (let [current-ns-refers (#'r/referred current-ns)
-        current-ns-aliases (#'r/aliased current-ns)]
-    (alter-var-root #'r/refresh-tracker dir/scan-dirs r/refresh-dirs {:platform find/clj})
-    (alter-var-root #'r/refresh-tracker #'r/remove-disabled)
-    (#'r/print-pending-reloads r/refresh-tracker)
-    (let [affected-nss (distinct (concat (::track/unload r/refresh-tracker)
-                                         (::track/load r/refresh-tracker)))]
-      (alter-var-root #'r/refresh-tracker reload/track-reload)
-      (let [result (#'r/print-and-return r/refresh-tracker)]
-        (if (= :ok result)
-          {::macro-reload-status :ok
-           ::affected-namespaces affected-nss}
-          ;; There was an error, recover as much as we can:
-          (do (when-not (or (false? (::r/unload (meta current-ns)))
-                            (false? (::r/load (meta current-ns))))
-                (#'r/recover-ns current-ns-refers current-ns-aliases))
-              ;; Return the Exception to the REPL:
-              {::macro-reload-status :error
-               ::error result}))))))
+  (binding [*ns* current-ns]
+    (let [current-ns-name (ns-name *ns*)
+          current-ns-refers (#'r/referred *ns*)
+          current-ns-aliases (#'r/aliased *ns*)]
+      (alter-var-root #'r/refresh-tracker dir/scan-dirs r/refresh-dirs {:platform find/clj})
+      (alter-var-root #'r/refresh-tracker #'r/remove-disabled)
+      (#'r/print-pending-reloads r/refresh-tracker)
+      (let [affected-nss (distinct (concat (::track/unload r/refresh-tracker)
+                                           (::track/load r/refresh-tracker)))]
+        (alter-var-root #'r/refresh-tracker reload/track-reload)
+        (in-ns current-ns-name)
+        (let [result (#'r/print-and-return r/refresh-tracker)]
+          (if (= :ok result)
+            {::macro-reload-status :ok
+             ::refreshed-namespaces affected-nss}
+            ;; There was an error, recover as much as we can:
+            (do (when-not (or (false? (::r/unload (meta *ns*)))
+                              (false? (::r/load (meta *ns*))))
+                  (#'r/recover-ns current-ns-refers current-ns-aliases))
+                ;; Return the Exception to the REPL:
+                {::macro-reload-status :error
+                 ::error result})))))))
 
 ;; copied from cljs.closure for backward compatibility
 (defn cljs-dependents-for-macro-namespaces
@@ -409,32 +412,23 @@
                            (set/intersection namespaces-set (-> x :require-macros vals set))))
                  (vals (:cljs.analyzer/namespaces @state))))))
 
-(defn refresh-macros-and-mark-dependents
-  "This could be done via tools.namespace, but the compiler needs to be notified
-  that these namespaces need to be re-compiled.
+(defn mark-for-reload
+  "I'm not at all sure if this is legit, but it appears to work.
 
-  As it is, this *must* be run prior to dir/scan-dirs."
-  [original-ns compiler-env]
-  (let [{:keys [::macro-reload-status
-                ::affected-namespaces] :as result}
-        (binding [*ns* original-ns]
-          (do-refresh-macros original-ns))]
-    (when (= macro-reload-status :ok)
-      ;; There is already a function for this: cljs.closure/mark-cljs-ns-for-recompile!
-      ;; However it sets last modified to 5000, and tools.namespace filters on
-      ;; last modified > last checked (clojure.tools.namespace.dir/modified-files).
-      ;; cljs seems to only care if last modified output != last modified input
-      ;; (cljs.util/changed?). So this ought to do.
-      (doseq [dep (cljs-dependents-for-macro-namespaces compiler-env
-                                                        affected-namespaces)]
-        ;; The cljs version also uses `target-file-for-cljs-ns`, which seems like a
-        ;; hack. The source transitively changed, not output file. Not sure what
-        ;; the reasoning was there. Either way, tools.namespace needs the source
-        ;; file changed.
-        (let [f (io/file (:uri (closure/source-for-namespace dep compiler-env)))]
-          (when (.exists f)
-            (.setLastModified f (System/currentTimeMillis))))))
-    result))
+  Assumes the tracker graph is up-to-date, and adds the requested namespaces to
+  the unload/load lists."
+  [{{:keys [dependents dependencies]} ::track/deps :as tracker} namespaces]
+  ;; Since the end goal is to get macro dependencies reloaded, and :require-macros
+  ;; is not included in :dependencies, we need to merge all depmaps, and pretend
+  ;; they *may* have dependencies. cljs can tell us which namespaces must be reloaded.
+  (let [all-depmaps (merge (reduce-kv (fn [m k v]
+                                        (assoc m k #{}))
+                                      {}
+                                      dependents)
+                           dependencies)]
+    (track/add tracker
+               (select-keys all-depmaps
+                            namespaces))))
 
 (defn remove-disabled [tracker disable-unload disable-load]
   (-> tracker
@@ -462,27 +456,36 @@
     (assert (symbol? s) "value must be a symbol")
     (assert (namespace s)
             "value must be a namespace-qualified symbol"))
-  (let [build-opts (repl-env->build-opts repl-opts repl-env)
-        {:keys [::macro-reload-status]
+  (let [{:keys [output-dir] :as build-opts}
+        (repl-env->build-opts repl-opts repl-env)
+
+        {:keys [::macro-reload-status
+                ::refreshed-namespaces]
          :as macro-status}
-        ;; must run this first so deps will be touched
-        (refresh-macros-and-mark-dependents original-ns
-                                            compiler-env)]
+        (do-refresh-macros original-ns)]
     (if (= :ok macro-reload-status)
-      (let [_ (swap! tracker dir/scan-dirs source-dirs {:platform find/cljs
-                                                        :add-all? add-all?})
+      (let [macro-cljs-dependents
+            (cljs-dependents-for-macro-namespaces compiler-env
+                                                  refreshed-namespaces)
+
             {:keys [::track/unload
                     ::track/load
                     ::file/filemap]}
-            (swap! tracker remove-disabled disable-unload disable-load)]
-        (when (seq load)
+            (swap! tracker (fn [t]
+                             (-> t
+                                 (dir/scan-dirs source-dirs {:platform find/cljs
+                                                             :add-all? add-all?})
+                                 (mark-for-reload macro-cljs-dependents)
+                                 (remove-disabled disable-unload disable-load))))]
+        (when (or (seq unload) (seq load))
           (prn :rebuilding)
+          (doseq [n macro-cljs-dependents]
+            (build/mark-cljs-ns-for-recompile! n output-dir))
           ;; build.api does some expensive input checks
           ;; Once we're here, no checks are needed.
           (closure/build (apply build/inputs source-dirs)
                          build-opts
-                         compiler-env))
-        (when (or (seq unload) (seq load))
+                         compiler-env)
           (prn :requesting-reload load)
           (-refresh refresher {:compiler-env compiler-env
                                :repl-env repl-env
@@ -533,7 +536,10 @@
                              (if (Files/isDirectory f (make-array LinkOption 0))
                                (recursive-register ws f)))))
                        (when (some (comp #(or (.endsWith % ".cljs")
-                                              (.endsWith % ".cljc"))
+                                              (.endsWith % ".cljc")
+                                              ;; Allow them to watch macro files if they want.
+                                              ;; It's no skin off my back.
+                                              (.endsWith % ".clj"))
                                          str
                                          #(.context %))
                                    events)
@@ -735,4 +741,7 @@
 
      'clear
      (wrap (fn [_ _ _ _]
-             (reset! tracker (track/tracker))))}))
+             (reset! tracker (track/tracker))))
+     #_#_'print-tracker
+         (wrap (fn [_ _ _ _]
+                 (clojure.pprint/pprint @tracker)))}))

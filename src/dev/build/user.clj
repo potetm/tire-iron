@@ -120,7 +120,9 @@
                 :verbose false
                 :parallel-build true
                 :special-fns (ti/special-fns
-                               :source-dirs ["src/dev/weasel"]
+                               :source-dirs ["src/dev/weasel"
+                                             ;; you can watch macros files too!
+                                             "src/dev/clj"]
                                :state 'com.potetm.weasel-client/state
                                :before 'com.potetm.weasel-client/before
                                :after 'com.potetm.weasel-client/after)))

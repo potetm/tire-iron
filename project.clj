@@ -10,7 +10,8 @@
   :resource-paths ["resources/prod"]
   :profiles {:provided {:dependencies [[org.clojure/clojure "1.8.0"]
                                        [org.clojure/clojurescript "1.9.293"]]}
-             :dev {:source-paths ["src/dev/clj"]
+             :dev {:source-paths ["src/dev/clj"
+                                  "src/dev/build"]
                    :resource-paths ["resources/dev"]}
              :cljs-repl [:dev
                          {:source-paths ["src/dev/browser"

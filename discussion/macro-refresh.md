@@ -56,3 +56,23 @@ via last modified date.
 development that would never happen in production. In theory, if you could keep
 those dependencies completely separate, say with jigsaw, it might be possible
 to reliably host a build-time and runtime environment in the same JVM.
+
+---
+
+Okay, after thinking about it some more, the trick of touching _source_ files
+is a bad trick. The cljs watcher touches _output_ files to mark them for
+re-compile. That won't work for me, because I need to notify the tracker that
+a file has changed. So I initially just marked the source files instead.
+This is bad for two reasons:
+
+  1. I'm modifying source files. No matter how much I try and minimize the
+     importance of the modified date, this is just wrong.
+  2. (Due to #1) If you have a watcher running, updating a macro and calling
+     `refresh` will trigger the watcher to re-refresh. This isn't horrible,
+     but it is a bug, and I don't want users to have to figure out what's
+     going on there.
+
+So I'm going back to the first solution: Merge changes between the clj/cljs
+trackers. I also need to do what the cljs watcher does and touch _output_
+files for recompile by the build. So it's more computer work overall, but
+it's the right thing to do.
