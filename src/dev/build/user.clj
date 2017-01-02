@@ -72,6 +72,7 @@
                                :after 'com.potetm.nashorn-client/after)))
 (defn node-nrepl []
   (pb/cljs-repl (node/repl-env)
+                :target :node
                 :analyze-path "src/dev/node"
                 :output-dir "target/public/js"
                 :special-fns (ti/special-fns

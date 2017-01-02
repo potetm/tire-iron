@@ -174,6 +174,15 @@
                                                [k])))
                  nss)))
 
+(defn js-file->assumed-compiled [output-dir js-file]
+  (let [f (io/file (closure/rel-output-path js-file))]
+    (assoc js-file
+      :url (.toURI
+             (if (.isAbsolute f)
+               f
+               (.getAbsoluteFile (io/file output-dir
+                                          f)))))))
+
 ;; copied from closure/target-file-for-cljs-ns for backward compatibility
 (defn ^File target-file-for-cljs-ns
   [ns-sym output-dir]
@@ -187,11 +196,14 @@
                 compiler-env
                 nss]
   (binding [env/*compiler* compiler-env]
-    (apply str
-           (map #(closure/add-dep-string opts (closure/compiled-file
-                                                {:file (target-file-for-cljs-ns %
-                                                                                output-dir)}))
-                nss))))
+    (closure/deps-file opts
+                       (map (partial js-file->assumed-compiled output-dir)
+                            (remove #(or (= (:group %) :goog)
+                                         (= :provides ["goog"]))
+                                    (apply closure/add-dependencies opts
+                                           (map #(closure/compiled-file
+                                                   {:file (target-file-for-cljs-ns % output-dir)})
+                                                nss)))))))
 
 (defn load-nss-sync [opts compiler-env nss]
   (str (add-deps opts compiler-env nss)
