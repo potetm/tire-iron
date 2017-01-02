@@ -2,11 +2,11 @@
 Bringing the Reloaded Workflow to ClojureScript
 
 ## Goals
-1. Facilitate the [Reloaded Workflow](http://thinkrelevance.com/blog/2013/06/04/clojure-workflow-reloaded) in ClojureScript.
-2. Provide full namespace reloading (including uninstalling old vars, reloading macros)
-3. Encourage managed application startup (a la [Component](https://github.com/stuartsierra/component)).
+1. Provide reliable namespace reloading in ClojureScript (including uninstalling old vars, reloading macros)
+2. Facilitate the [Reloaded Workflow](http://thinkrelevance.com/blog/2013/06/04/clojure-workflow-reloaded)
+3. Encourage managed application startup (a la [Component](https://github.com/stuartsierra/component))
 4. Function out of the box in every ClojureScript environment
-5. Add zero dependencies to your ClojureScript code (only requires built-in google-closure libraries).
+5. Add zero dependencies to your ClojureScript code (only requires built-in google-closure libraries)
 6. Allow you to preserve application state during reloading
 7. Permit automatic reloading on file change
 

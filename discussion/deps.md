@@ -34,6 +34,11 @@ So that all worked. I'm able to get ~70ms for a small project. On
 a large project it took a few seconds. Not completely awful
 comparatively.
 
+I'll continue considering ways to improve dep resolution. My initial thought
+is: This isn't always necessary. You have some of the information to
+figure out if dependencies actually changed. (You don't have `:import`
+information...)
+
 However, I've realized a pretty massive hole in this. If they add a new
 dependency on a non-project namespace (say `clojure.data`), I need to
 load that namespace _before_ loading their namespace. This should be do-able

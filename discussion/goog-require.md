@@ -207,3 +207,50 @@ concerns me about the DOM-reloading strategy:
 I've tested it, and source mapping seems to work fine. I had to add a cache busting
 scheme to make it update in Chrome, but that appears to be [a Chrome bug](https://bugs.chromium.org/p/chromium/issues/detail?id=438251).
 More on this in [source-maps](./source-maps.md).
+
+---
+
+So you might have noticed I was really hedging my bets linguistically with regard to
+going around `goog.require`. It turns out that uncertainty was well-founded. It makes
+me feel a touch better knowing that I noticed something might incorrect in my thinking.
+
+While trying to improve [dependency loading](./deps.md), I noticed a bug in this
+scheme. When I said "I will take care of dependency ordering," what I meant was
+"I will take care of _project dependency_ ordering." `tools.namespace` only
+orders project files for reloading. So if the user adds a `:require` or `:import` on
+a non-project dependency, that dependency will not be loaded prior to loading the
+project namespace. This actually works out some of the time. If the dependency invocation is
+nested with in a function call, and function invocation is delayed a bit, the normal
+`goog.require` process might put the dependency in place in time. However, if the
+dependency is invoked on namespace load, you will hit an error.
+
+The goal of this project is to provide _reliable_ namespace reloading. So I'm going
+to have to handle this.
+
+My idea right now:
+
+During reloading:
+  1. Make sure dependencies are properly added
+  2. Override `goog.global.CLOSURE_IMPORT_SCRIPT` to be a function that pops the URL
+     onto a shared array `deps`.
+  3. Call `goog.require` for all dependencies to be reloaded.
+  4. Reset ` goog.global.CLOSURE_IMPORT_SCRIPT` to it's original function.
+  5. Call `loadMany` with `deps.concat(cached_busted_sources)`.
+
+The key piece of knowledge here is: We fundamentally _cannot_ know what the environment
+has loaded from the server. So our options are: 1) load every dependency every time,
+or 2) have the environment determine what must be loaded. Additionally, we must
+have access to a post-load callback. This latter requirement makes using `goog.require`
+by itself a non-starter.
+
+The above properly handles those requirements. The environment figures out what
+must be loaded, and we'll have access to a post-load callback. It also does not
+interfere with any other operation. Up until calling `loadMany`, the operation will
+be synchronous, so we'll be able to ensure that we aren't affecting anybody. In
+addition, this method will allow us to keep cache-busting source paths when
+possible, while _not_ cache busting non-source paths. Cache busting those paths
+is 1) useless, and 2) not what we want semantically. Those are static files that
+do not change.
+
+It's a little convoluted, but the alternative of loading every dep every time will
+be slow. So we use the standard method: cache.

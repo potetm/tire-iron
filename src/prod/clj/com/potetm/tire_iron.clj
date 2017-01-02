@@ -222,26 +222,50 @@
                       nss))))
 
 (defn load-nss-html-async [build-opts compiler-env nss]
+  ;; This is somewhat convoluted. I'm sorry. I tried. But it's all for a reason.
+  ;;
+  ;; See goog-require.md for details.
   (let [loaded-libs (comp/munge 'cljs.core/*loaded-libs*)
         nss-array (str "["
                        (str/join ",\n"
                                  (map (comp #(str "\"" % "\"")
                                             comp/munge)
                                       nss))
-                       "]")
-        nss-paths (str "["
-                       (str/join ",\n"
-                                 (map (fn [n]
-                                        (str "goog.tire_iron_name_to_path__('" (comp/munge n) "')"))
-                                      nss))
                        "]")]
     (str "(function() {\n"
+         "var nss, is_src_path, raw_paths, cache_busted_paths, deps, closure_import_script_backup, i, l;"
          (add-deps build-opts compiler-env nss)
-         "var nss = " nss-array ";\n"
-         "var nss_paths = " nss-paths ";\n"
-         "return goog.tire_iron_loadMany__(nss_paths, {cleanupWhenDone: true}).addCallback(function() {\n"
-         "  " loaded-libs " = cljs.core.apply.call(null, cljs.core.conj, " loaded-libs " || cljs.core.PersistentHashSet.EMPTY, nss);\n"
+         "nss = " nss-array ";\n"
+
+         "cache_busted_paths = [];\n"
+         "for (i = 0, l = nss.length; i < l; i++) {\n"
+         "  cache_busted_paths[i] = goog.tire_iron_name_to_path__(nss[i]);\n"
+         "}\n"
+
+         "is_src_path = {};\n"
+         "for (i = 0, l = nss.length; i < l; i++) {\n"
+         "  is_src_path[goog.basePath + goog.dependencies_.nameToPath[nss[i]]] = true;\n"
+         "}\n"
+
+         "deps = [];\n"
+         "closure_import_script_backup = goog.global.CLOSURE_IMPORT_SCRIPT;\n"
+         "try {\n"
+         "  goog.global.CLOSURE_IMPORT_SCRIPT = function (src, opt_script) {\n"
+         "    if (!is_src_path[src]) {\n"
+         "      deps.push(src);\n"
+         "    }\n"
+         "  };\n"
+
+         "  for (i = 0, l = nss.length; i < l; i++) {\n"
+         "    goog.require(nss[i], 'reload');\n" ;; take advantage of cljs require implementation
+         "  }\n"
+
+         "  return goog.tire_iron_loadMany__(deps.concat(cache_busted_paths), {cleanupWhenDone: true}).addCallback(function() {\n"
+         "    " loaded-libs " = cljs.core.apply.call(null, cljs.core.conj, " loaded-libs " || cljs.core.PersistentHashSet.EMPTY, nss);\n"
          "  });\n"
+         "}\n finally {\n"
+         "  goog.global.CLOSURE_IMPORT_SCRIPT = closure_import_script_backup;\n"
+         "}\n"
          "})();")))
 
 ;; copied from cljs.repl/env->opts
