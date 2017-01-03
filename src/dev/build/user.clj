@@ -70,6 +70,7 @@
                                :state 'com.potetm.nashorn-client/state
                                :before 'com.potetm.nashorn-client/before
                                :after 'com.potetm.nashorn-client/after)))
+
 (defn node-nrepl []
   (pb/cljs-repl (node/repl-env)
                 :target :node
@@ -159,3 +160,7 @@
   (copy-index-to-target)
   (weasel-build)
   (weasel-nrepl))
+
+(defn fresh-node-repl []
+  (clean)
+  (node-nrepl))

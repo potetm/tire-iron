@@ -52,3 +52,25 @@ dependencies myself.
 Blerg. This sucks.
 
 Time to consider if I can go through goog.require yet again....
+
+Continued in [goog-require](./goog-require.md).
+
+---
+
+Okay, I have an idea of how to speed up deps reloading. We can save
+off ns information from `env/*compiler*` that will tell us what the
+previous state of _all_ requirements for a namespace are. Then we can
+figure out the namespaces that need their deps reloaded from that.
+
+---
+
+That appears to work. Initial load and deps changes are still in the 10s-100s
+of milliseconds, but non-deps-changing refreshes are sub-millisecond. It's pretty
+instantaneous even in a large repo.
+
+My main concern is that I'm _way_ outside the realm of the cljs API. I'm
+now digging into the internals of how they choose to cache build data. Seems
+bad-news-bears, but I doubt this is a hotspot of change at this point. The
+information I'm using also _must_ be obtained at some point. Indeed, this
+has been parsed since the beginning, and it's been stored in `env/*compiler*`
+as long as the `env` namespace has been around.

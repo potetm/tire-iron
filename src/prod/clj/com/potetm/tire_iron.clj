@@ -195,33 +195,32 @@
 (defn add-deps [{:keys [output-dir] :as opts}
                 compiler-env
                 nss]
-  (binding [env/*compiler* compiler-env]
-    (closure/deps-file opts
-                       (map (partial js-file->assumed-compiled output-dir)
-                            (remove #(or (= (:group %) :goog)
-                                         (= :provides ["goog"]))
-                                    (apply closure/add-dependencies opts
-                                           (map #(closure/compiled-file
-                                                   {:file (target-file-for-cljs-ns % output-dir)})
-                                                nss)))))))
+  (when (seq nss)
+    (binding [env/*compiler* compiler-env]
+      (closure/deps-file opts
+                         (map (partial js-file->assumed-compiled output-dir)
+                              (remove #(or (= (:group %) :goog)
+                                           (= :provides ["goog"]))
+                                      (apply closure/add-dependencies opts
+                                             (map #(closure/compiled-file
+                                                     {:file (target-file-for-cljs-ns % output-dir)})
+                                                  nss))))))))
 
-(defn load-nss-sync [opts compiler-env nss]
-  (str (add-deps opts compiler-env nss)
-       "\n"
-       (str/join "\n"
-                 ;; it's not clear to me what the API of the repl monkey-patched
-                 ;; goog.require is. It takes a second arg named "reload", and
-                 ;; the browser repl checks if (= reload "reload-all"). Other repls
-                 ;; only check truthiness. So my assumption is that it has the same
-                 ;; semantics as clojure.core/require, but with strings for easy
-                 ;; use from JS.
-                 ;;
-                 ;; cljs.compiler/load-libs confirms this assessment
-                 (map (comp #(str "goog.require('" % "', 'reload');")
-                            comp/munge)
-                      nss))))
+(defn load-nss-sync [nss]
+  (str/join "\n"
+            ;; it's not clear to me what the API of the repl monkey-patched
+            ;; goog.require is. It takes a second arg named "reload", and
+            ;; the browser repl checks if (= reload "reload-all"). Other repls
+            ;; only check truthiness. So my assumption is that it has the same
+            ;; semantics as clojure.core/require, but with strings for easy
+            ;; use from JS.
+            ;;
+            ;; cljs.compiler/load-libs confirms this assessment
+            (map (comp #(str "goog.require('" % "', 'reload');")
+                       comp/munge)
+                 nss)))
 
-(defn load-nss-html-async [build-opts compiler-env nss]
+(defn load-nss-html-async [nss]
   ;; This is somewhat convoluted. I'm sorry. I tried. But it's all for a reason.
   ;;
   ;; See goog-require.md for details.
@@ -234,7 +233,6 @@
                        "]")]
     (str "(function() {\n"
          "var nss, is_src_path, raw_paths, cache_busted_paths, deps, closure_import_script_backup, i, l;"
-         (add-deps build-opts compiler-env nss)
          "nss = " nss-array ";\n"
 
          "cache_busted_paths = [];\n"
@@ -365,7 +363,8 @@
                           state
                           all-nss
                           unload-nss
-                          load-nss] :as opts}]
+                          load-nss
+                          load-deps-nss] :as opts}]
     (try
       ;; piggieback "helpfully" prints every error it encounters to the
       ;; repl for you. We don't want that if we're going to commit to handling
@@ -374,8 +373,9 @@
         (eval-script repl-env
                      (str "(function() {\n"
                           (call-sym-script before)
+                          (add-deps build-opts compiler-env load-deps-nss)
                           (unload-nss-script state all-nss unload-nss)
-                          "var d = " (load-nss-html-async build-opts compiler-env load-nss) ";\n"
+                          "var d = " (load-nss-html-async load-nss) ";\n"
                           "d.addCallback(function(ret) {\n"
                           (call-sym-script after)
                           "  });\n"
@@ -389,7 +389,7 @@
                                 ;; Don't call :before. If we're in this situation
                                 ;; we know we've already called it and unloaded it.
                                 ;; Don't call unload because it should already be done.
-                                "var d = " (load-nss-html-async build-opts compiler-env load-nss) ";\n"
+                                "var d = " (load-nss-html-async load-nss) ";\n"
                                 "d.addCallback(function(ret) {\n"
                                 (call-sym-script after)
                                 "  });\n"
@@ -407,12 +407,16 @@
                           state
                           all-nss
                           unload-nss
-                          load-nss]}]
+                          load-nss
+                          load-deps-nss]}]
     (eval-script repl-env
-                 (str (call-sym-script before)
+                 (str "(function() {\n"
+                      (call-sym-script before)
+                      (add-deps build-opts compiler-env load-deps-nss)
                       (unload-nss-script state all-nss unload-nss)
-                      (load-nss-sync build-opts compiler-env load-nss)
-                      (call-sym-script after)))))
+                      (load-nss-sync load-nss)
+                      (call-sym-script after)
+                      "})();"))))
 
 ;; Copied from clojure.tools.namespace/repl. This is definitionally
 ;; the same, but I need to get the affected namespaces.
@@ -466,6 +470,33 @@
     (track/add tracker
                (select-keys all-depmaps
                             namespaces))))
+
+;; Since compiling the deps file is super slow, figure out whether it must be
+;; done using env/*compiler* cache.
+(defn find-deps-changed [{:keys [::track/load
+                                 ::track/unload
+                                 ::file/filemap
+                                 ::load-deps-nss
+                                 ::deps] :as tracker}
+                         {:keys [::ana/namespaces] :as env}]
+  (let [new-deps (reduce (fn [idx n]
+                           (let [{{:keys [imports
+                                          requires
+                                          uses]} n} namespaces]
+                             (assoc idx
+                               n (concat imports
+                                         requires
+                                         uses))))
+                         {}
+                         (vals filemap))]
+    (assoc tracker
+      ::load-deps-nss (distinct (concat load-deps-nss
+                                        (filter (fn [n]
+                                                  (not= (get new-deps n)
+                                                        (get deps n)))
+                                                (concat load
+                                                        unload))))
+      ::deps new-deps)))
 
 (defn remove-disabled [tracker disable-unload disable-load]
   (-> tracker
@@ -524,18 +555,25 @@
                          build-opts
                          compiler-env)
           (prn :requesting-reload load)
-          (-refresh refresher {:compiler-env compiler-env
-                               :repl-env repl-env
-                               :analyzer-env analyzer-env
-                               :repl-opts repl-opts
-                               :build-opts build-opts
-                               :before before
-                               :after after
-                               :state state
-                               :all-nss (vals filemap)
-                               :unload-nss unload
-                               :load-nss load}))
-        (swap! tracker assoc ::track/load nil ::track/unload nil)
+          ;; finding changed deps must happen after build so caches are up-to-date
+          (let [{:keys [::load-deps-nss]}
+                (swap! tracker find-deps-changed @compiler-env)]
+            (-refresh refresher {:compiler-env compiler-env
+                                 :repl-env repl-env
+                                 :analyzer-env analyzer-env
+                                 :repl-opts repl-opts
+                                 :build-opts build-opts
+                                 :before before
+                                 :after after
+                                 :state state
+                                 :all-nss (vals filemap)
+                                 :unload-nss unload
+                                 :load-nss load
+                                 :load-deps-nss load-deps-nss})))
+        (swap! tracker assoc
+               ::track/load nil
+               ::track/unload nil
+               ::load-deps-nss nil)
         (println :ok))
       (println macro-status))))
 
