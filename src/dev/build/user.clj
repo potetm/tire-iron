@@ -150,17 +150,20 @@
     (del (io/file "nashorn_code_cache"))))
 
 (defn fresh-browser-repl []
+  (r/refresh)
   (clean)
   (copy-index-to-target)
   (browser-build)
   (browser-nrepl))
 
 (defn fresh-weasel-repl []
+  (r/refresh)
   (clean)
   (copy-index-to-target)
   (weasel-build)
   (weasel-nrepl))
 
 (defn fresh-node-repl []
+  (r/refresh)
   (clean)
   (node-nrepl))

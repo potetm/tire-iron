@@ -297,64 +297,106 @@
 
 (defrecord DomAsyncRefresher []
   IRefresh
+  ;; Well this funciton kind of got out of hand. See goog-require.md, source-maps.md,
+  ;; and initialization.md in the discussion directory for details.
   (-initialize [this {:keys [repl-env analyzer-env repl-opts]}]
-    (require-libs repl-env
-                  analyzer-env
-                  repl-opts
-                  '[goog.net.jsloader
-                    goog.Uri
-                    goog.object])
-    ;; Older versions of cljs include a closure-library that has a version of loadMany
-    ;; that doesn't return a deferred. Copy the version we want here for backward
-    ;; compatibility.
-    (eval-script repl-env
-                 (str "goog.tire_iron_scriptLoadingDeferred_;\n"
-                      "goog.tire_iron_loadMany__ = function(uris, opt_options) {\n"
-                      "  if (!uris.length) {\n"
-                      "    return goog.async.Deferred.succeed(null);\n"
-                      "  }\n"
-                      "\n"
-                      "  var isAnotherModuleLoading = goog.net.jsloader.scriptsToLoad_.length;\n"
-                      "  goog.array.extend(goog.net.jsloader.scriptsToLoad_, uris);\n"
-                      "  if (isAnotherModuleLoading) {\n"
-                      "    return goog.tire_iron_scriptLoadingDeferred_;\n"
-                      "  }\n"
-                      "\n"
-                      "  uris = goog.net.jsloader.scriptsToLoad_;\n"
-                      "  var popAndLoadNextScript = function() {\n"
-                      "    var uri = uris.shift();\n"
-                      "    var deferred = goog.net.jsloader.load(uri, opt_options);\n"
-                      "    if (uris.length) {\n"
-                      "      deferred.addBoth(popAndLoadNextScript);\n"
-                      "    }\n"
-                      "    return deferred;\n"
-                      "  };\n"
-                      "  goog.tire_iron_scriptLoadingDeferred_ = popAndLoadNextScript();\n"
-                      "  return goog.tire_iron_scriptLoadingDeferred_;\n"
-                      "};\n"))
-    (eval-form repl-env
-               analyzer-env
-               repl-opts
-               '(do (set! js/goog.tire_iron_name_to_path__
-                          (fn [n]
-                            (.makeUnique (js/goog.Uri.parse (str js/goog.basePath
-                                                                 (js/goog.object.get js/goog.dependencies_.nameToPath
-                                                                                     n))))))
-                    (let [path (js/goog.tire_iron_name_to_path__ "goog.object")]
-                      (doto (js/goog.net.jsloader.load path
-                                                       (clj->js {"cleanupWhenDone" true}))
-                        (.addCallback (fn []
-                                        (comment (js/console.log "cache busting supported!"))))
-                        (.addErrback (fn []
-                                       (js/console.debug "The failed network call to" (.toString path) "was a test to see if your system supports source map reloading.")
-                                       (js/console.debug "Unfortunately, your system does not support this feature.")
-                                       (js/console.debug "This is a known issue with cljs.repl.browser/repl-env.")
-                                       (js/console.debug "This will not affect your ability to use any other feature of tire-iron.")
-                                       (set! js/goog.tire_iron_name_to_path__
-                                             (fn [n]
-                                               (str js/goog.basePath
-                                                    (js/goog.object.get js/goog.dependencies_.nameToPath
-                                                                        n)))))))))))
+    (let [try-times-until (fn [times sleep-ms f]
+                            (let [f #(try {:type :success
+                                           :value (f)}
+                                          (catch Exception e
+                                            {:type :error
+                                             :error e}))]
+                              (loop [i 0
+                                     last-err nil]
+                                (if (< i times)
+                                  (do (Thread/sleep sleep-ms)
+                                      (let [{:keys [type value error]} (f)]
+                                        (cond
+                                          (= type :error) (recur (inc i)
+                                                                 error)
+                                          (and (= type :success)
+                                               value) {:type :success
+                                                       :value value}
+                                          ;; falsy value returned
+                                          :else (recur (inc i)
+                                                       last-err))))
+                                  {:type :failure
+                                   :last-error last-err}))))
+          initialized? (fn []
+                         (= "true"
+                            (eval-script repl-env
+                                         (str "typeof goog.net !== 'undefined' &&"
+                                              " typeof goog.net.jsloader !== 'undefined'"))))]
+      (require-libs repl-env
+                    analyzer-env
+                    repl-opts
+                    '[[goog.object]
+                      [goog.Uri]
+                      [goog.net.jsloader]])
+      ;; Older versions of cljs include a closure-library that has a version of loadMany
+      ;; that doesn't return a deferred. Copy the version we want here for backward
+      ;; compatibility.
+      (eval-script repl-env
+                   (str "goog.tire_iron_scriptLoadingDeferred_;\n"
+                        "goog.tire_iron_loadMany__ = function(uris, opt_options) {\n"
+                        "  if (!uris.length) {\n"
+                        "    return goog.async.Deferred.succeed(null);\n"
+                        "  }\n"
+                        "\n"
+                        "  var isAnotherModuleLoading = goog.net.jsloader.scriptsToLoad_.length;\n"
+                        "  goog.array.extend(goog.net.jsloader.scriptsToLoad_, uris);\n"
+                        "  if (isAnotherModuleLoading) {\n"
+                        "    return goog.tire_iron_scriptLoadingDeferred_;\n"
+                        "  }\n"
+                        "\n"
+                        "  uris = goog.net.jsloader.scriptsToLoad_;\n"
+                        "  var popAndLoadNextScript = function() {\n"
+                        "    var uri = uris.shift();\n"
+                        "    var deferred = goog.net.jsloader.load(uri, opt_options);\n"
+                        "    if (uris.length) {\n"
+                        "      deferred.addBoth(popAndLoadNextScript);\n"
+                        "    }\n"
+                        "    return deferred;\n"
+                        "  };\n"
+                        "  goog.tire_iron_scriptLoadingDeferred_ = popAndLoadNextScript();\n"
+                        "  return goog.tire_iron_scriptLoadingDeferred_;\n"
+                        "};\n"))
+      (let [{:keys [type last-error]} (try-times-until 50 100 initialized?)]
+        (if (= :success type)
+          (eval-form repl-env
+                     analyzer-env
+                     repl-opts
+                     '(let [cache-busted (fn [n]
+                                           (.makeUnique (js/goog.Uri.parse (str js/goog.basePath
+                                                                                (js/goog.object.get js/goog.dependencies_.nameToPath
+                                                                                                    n)))))
+                            raw-path (fn [n]
+                                       (str js/goog.basePath
+                                            (js/goog.object.get js/goog.dependencies_.nameToPath
+                                                                n)))
+                            path (cache-busted "goog.object")]
+                        ;; Since the first round of requests could be imminent and we're
+                        ;; in async-land, default to raw-path until we're confident
+                        ;; cache-busting is supported. See initialization.md.
+                        (set! js/goog.tire_iron_name_to_path__
+                              raw-path)
+                        (doto (js/goog.net.jsloader.load path
+                                                         (clj->js {"cleanupWhenDone" true}))
+                          (.addCallback (fn []
+                                          (comment (js/console.log "cache busting supported!"))
+                                          (set! js/goog.tire_iron_name_to_path__
+                                                cache-busted)))
+                          (.addErrback (fn []
+                                         (js/console.debug "The failed network call to" (.toString path) "was a test to see if your system supports source map reloading.")
+                                         (js/console.debug "Unfortunately, your system does not support this feature.")
+                                         (js/console.debug "This is a known issue with cljs.repl.browser/repl-env.")
+                                         (js/console.debug "This will not affect your ability to use any other feature of tire-iron."))))))
+          (binding [*out* *err*]
+            (println (str "Unable to initialize tire-iron.\n"
+                          "This should not be a common occurrance. Actually my hope was that it would never occur.\n"
+                          "If this is an issue for you, I would like to know about it.\n"
+                          "Please file an issue at https://github.com/potetm/tire-iron/issues\n"))
+            (throw (ex-info "Unable to initialize." {} last-error)))))))
   (-refresh [this {:keys [repl-env
                           build-opts
                           compiler-env
