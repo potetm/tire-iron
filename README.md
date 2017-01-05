@@ -3,23 +3,30 @@ Bringing the Reloaded Workflow to ClojureScript
 
 ## Goals
 1. Provide reliable namespace reloading in ClojureScript (including uninstalling old vars, reloading macros)
-2. Facilitate the [Reloaded Workflow](http://thinkrelevance.com/blog/2013/06/04/clojure-workflow-reloaded)
-3. Encourage managed application startup (a la [Component](https://github.com/stuartsierra/component))
+2. Encourage managed application startup (a la [Component](https://github.com/stuartsierra/component))
+3. Facilitate the [Reloaded Workflow](http://thinkrelevance.com/blog/2013/06/04/clojure-workflow-reloaded) in ClojureScript
 4. Function out of the box in every ClojureScript environment
 5. Add zero dependencies to your ClojureScript code (only requires built-in google-closure libraries)
 6. Allow you to preserve application state during reloading
-7. Permit automatic reloading on file change
+7. Support source-map reloading
+8. Permit automatic reloading on file change
 
 ## Installation
 ```clj
-[com.potetm/tire-iron "0.2.1"]
+[com.potetm/tire-iron "0.3.0"]
 ```
 
-tire-iron should not be included in your production code (e.g.
+Tire-iron should not be included in your production code (e.g.
 it should be in a [leiningen profile](https://github.com/technomancy/leiningen/blob/master/doc/PROFILES.md)).
 
 The easiest way to get started with tire-iron is to use the [cljs-reloaded](https://github.com/potetm/cljs-reloaded-template)
-Leiningen template. Just run `lein new cljs-reloaded my.group/my-awesome-project`, and you're off to the races!
+Leiningen template. Just run
+
+```
+lein new cljs-reloaded my.group/my-awesome-project
+```
+
+and you're off to the races!
 
 ## Overview
 tire-iron works by creating `:special-fn`s that to you add to
@@ -142,7 +149,7 @@ Tire-iron provides little in the way of easing the transition to ClojureScript.
 However, it:
   * Makes no assumptions about your choice of build tool.
   * Only requires that your [REPL Env](https://github.com/clojure/clojurescript/wiki/Custom-REPLs)
-    implements `cljs.repl/IJavaScriptEnv` and supports `:special-fns`. (Both are standard requirements.)
+    implement `cljs.repl/IJavaScriptEnv` and support `:special-fns`. (Both are standard requirements.)
   * Makes no assumptions regarding your JS environment.
   * Adds two dependencies to your build environment:
     * [tools.namespace](https://github.com/clojure/tools.namespace)
