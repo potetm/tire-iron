@@ -135,9 +135,6 @@ It goes out of its way to hide details that routinely cause friction, even among
 experienced ClojureScript developers. However, the ease of getting started
 comes at the cost of some increased complexity and decreased flexibility. Namely,
 Figwheel:
-  * Requires the use of Leiningen
-  * Requires the use of cljsbuild
-  * Is tightly integrated with the above
   * Adds a dependency on `core.async` to your ClojureScript code
   * Adds a number of dependencies to your build environment
   * Is only designed to work in the browser and in Node.
@@ -147,7 +144,6 @@ Figwheel:
 
 Tire-iron provides little in the way of easing the transition to ClojureScript.
 However, it:
-  * Makes no assumptions about your choice of build tool.
   * Only requires that your [REPL Env](https://github.com/clojure/clojurescript/wiki/Custom-REPLs)
     implement `cljs.repl/IJavaScriptEnv` and support `:special-fns`. (Both are standard requirements.)
   * Makes no assumptions regarding your JS environment.
