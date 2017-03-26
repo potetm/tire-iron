@@ -97,7 +97,7 @@ Because `:special-fns` are just symbols that are handled specially by the REPL,
 and `:state` arguments have been provided.
 
 Refresh happens in the following order:
- 1. Clojure build environment is refreshed (via `clojure.tools.namespace.REPL/refresh`)
+ 1. Clojure build environment is refreshed (via `clojure.tools.namespace.repl/refresh`)
  2. ClojureScript files are re-compiled
  3. `:before` is called
  4. Vars are removed (the `:state` symbol is left untouched)
