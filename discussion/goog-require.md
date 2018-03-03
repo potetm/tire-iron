@@ -254,3 +254,13 @@ do not change.
 
 It's a little convoluted, but the alternative of loading every dep every time will
 be slow. So we use the standard method: cache.
+
+---
+
+Yet another tale in this saga.
+
+Later versions of closure removed goog.net.loadMany and goog.net.load. They
+replaced them with "safeLoad" and "safeLoadMany". I was already providing my
+own loadMany function for compatibility back to cljs 1.8. I decided to wholesale
+copy the goog.net.jsloader module that I want into a new module. That way I
+have total control over it going forward.

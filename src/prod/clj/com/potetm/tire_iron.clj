@@ -258,7 +258,7 @@
          "    goog.require(nss[i], 'reload');\n" ;; take advantage of cljs require implementation
          "  }\n"
 
-         "  return goog.tire_iron_loadMany__(deps.concat(cache_busted_paths), {cleanupWhenDone: true}).addCallback(function() {\n"
+         "  return goog.tire_iron_.jsloader.loadMany(deps.concat(cache_busted_paths), {cleanupWhenDone: true}).addCallback(function() {\n"
          "    " loaded-libs " = cljs.core.apply.call(null, cljs.core.conj, " loaded-libs " || cljs.core.PersistentHashSet.EMPTY, nss);\n"
          "  });\n"
          "}\n finally {\n"
@@ -293,7 +293,7 @@
       (and (str/includes? value "TypeError")
            (or (str/includes? value "tire_iron_name_to_path__")
                (str/includes? value "tire_iron_scriptLoadingDeferred_")
-               (str/includes? value "tire_iron_loadMany__"))))))
+               (str/includes? value "tire_iron_.jsloader.loadMany__"))))))
 
 (defrecord DomAsyncRefresher []
   IRefresh
@@ -325,42 +325,18 @@
           initialized? (fn []
                          (= "true"
                             (eval-script repl-env
-                                         (str "typeof goog.net !== 'undefined' &&"
-                                              " typeof goog.net.jsloader !== 'undefined'"))))]
+                                         (str "typeof goog.tire_iron_ !== 'undefined' &&"
+                                              " typeof goog.tire_iron_.jsloader !== 'undefined'"))))]
       (require-libs repl-env
                     analyzer-env
                     repl-opts
                     '[[goog.object]
-                      [goog.Uri]
-                      [goog.net.jsloader]])
+                      [goog.Uri]])
       ;; Older versions of cljs include a closure-library that has a version of loadMany
       ;; that doesn't return a deferred. Copy the version we want here for backward
       ;; compatibility.
       (eval-script repl-env
-                   (str "goog.tire_iron_scriptLoadingDeferred_;\n"
-                        "goog.tire_iron_loadMany__ = function(uris, opt_options) {\n"
-                        "  if (!uris.length) {\n"
-                        "    return goog.async.Deferred.succeed(null);\n"
-                        "  }\n"
-                        "\n"
-                        "  var isAnotherModuleLoading = goog.net.jsloader.scriptsToLoad_.length;\n"
-                        "  goog.array.extend(goog.net.jsloader.scriptsToLoad_, uris);\n"
-                        "  if (isAnotherModuleLoading) {\n"
-                        "    return goog.tire_iron_scriptLoadingDeferred_;\n"
-                        "  }\n"
-                        "\n"
-                        "  uris = goog.net.jsloader.scriptsToLoad_;\n"
-                        "  var popAndLoadNextScript = function() {\n"
-                        "    var uri = uris.shift();\n"
-                        "    var deferred = goog.net.jsloader.load(uri, opt_options);\n"
-                        "    if (uris.length) {\n"
-                        "      deferred.addBoth(popAndLoadNextScript);\n"
-                        "    }\n"
-                        "    return deferred;\n"
-                        "  };\n"
-                        "  goog.tire_iron_scriptLoadingDeferred_ = popAndLoadNextScript();\n"
-                        "  return goog.tire_iron_scriptLoadingDeferred_;\n"
-                        "};\n"))
+                   (slurp (io/resource "jsloader.js")))
       (let [{:keys [type last-error]} (try-times-until 50 100 initialized?)]
         (if (= :success type)
           (eval-form repl-env
@@ -380,8 +356,8 @@
                         ;; cache-busting is supported. See initialization.md.
                         (set! js/goog.tire_iron_name_to_path__
                               raw-path)
-                        (doto (js/goog.net.jsloader.load path
-                                                         (clj->js {"cleanupWhenDone" true}))
+                        (doto (js/goog.tire_iron_.jsloader.load path
+                                                                (clj->js {"cleanupWhenDone" true}))
                           (.addCallback (fn []
                                           (comment (js/console.log "cache busting supported!"))
                                           (set! js/goog.tire_iron_name_to_path__

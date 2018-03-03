@@ -36,7 +36,7 @@
                           :serve-static true
                           :static-dir "target/public")
    ;; However, you DO want these args to be identical to your build args.
-   ;; This insures that re-compiles are exactly equivalent to your initial build.
+   ;; This ensures that re-compiles are exactly equivalent to your initial build.
    :repl-args {:main 'com.potetm.browser-client
                :output-to "target/public/js/client.js"
                :output-dir "target/public/js"

@@ -22,3 +22,5 @@
 
 (defmethod test-multi :foo [_]
   "MULTI!")
+
+(println (test-multi {:type :foo}))
