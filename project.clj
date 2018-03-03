@@ -1,4 +1,4 @@
-(defproject com.potetm/tire-iron "0.3.0"
+(defproject com.potetm/tire-iron "0.4.0"
   :description "Reloaded Workflow for ClojureScript"
   :url "https://github.com/potetm/tire-iron"
   :license {:name "Eclipse Public License"
