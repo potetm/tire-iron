@@ -269,10 +269,13 @@
 ;; copied from cljs.repl/env->opts
 (defn repl-env->build-opts [repl-opts repl-env]
   (merge (into {} repl-env)
-         {:optimizations (:optimizations repl-env :none)
-          :output-dir (:working-dir repl-env ".repl")}
-         repl-opts))
-
+         {:optimizations :none
+          :output-dir ".repl"}
+         {:optimizations (:optimizations repl-env)
+          :output-dir (:working-dir repl-env)}
+         (select-keys repl-opts
+                      [:optimizations
+                       :output-dir])))
 
 (defn html-async-init-error? [ex-i]
   (let [{{:keys [value] :as e} :error} (ex-data ex-i)]
